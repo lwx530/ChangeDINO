@@ -89,14 +89,9 @@ class DenseAdapterLite(nn.Module):
         sizes=(64, 32, 16, 8),
         bottleneck=64,
         share=False,
-        # 新增参数
-        use_attention=True,
-        keep_resolution=True,  # 是否保持原始分辨率
     ):
         super().__init__()
         self.sizes = list(sizes)
-        self.keep_resolution = keep_resolution
-
         if share:
             self.blocks = nn.ModuleList(
                 [SepAdapterBlock(in_dim, out_dim, r=bottleneck)]
@@ -105,20 +100,6 @@ class DenseAdapterLite(nn.Module):
             self.blocks = nn.ModuleList(
                 [SepAdapterBlock(in_dim, out_dim, r=bottleneck) for _ in self.sizes]
             )
-
-        # 可选的注意力增强
-        if use_attention:
-            self.attentions = nn.ModuleList([
-                nn.Sequential(
-                    nn.Conv2d(out_dim, out_dim // 4, 1),
-                    nn.ReLU(),
-                    nn.Conv2d(out_dim // 4, 1, 1),
-                    nn.Sigmoid()
-                ) for _ in self.sizes
-            ])
-        else:
-            self.attentions = None
-
         self.share = share
 
     def forward(self, feats):
@@ -128,28 +109,13 @@ class DenseAdapterLite(nn.Module):
         """
         outs = []
         for i, x in enumerate(feats):
-            # 如果保持分辨率，使用原始尺寸
-            if self.keep_resolution:
-                target_size = x.shape[-2:]
-            else:
-                target_size = (self.sizes[i], self.sizes[i])
-
-            # 调整尺寸
-            if x.shape[-2:] != target_size:
-                x = F.interpolate(
-                    x,
-                    size=target_size,
-                    mode="bilinear",
-                    align_corners=False,
-                    antialias=True,
+            x = F.interpolate(
+                x,
+                size=(self.sizes[i], self.sizes[i]),
+                mode="bilinear",
+                align_corners=False,
+                antialias=True,
             )
             block = self.blocks[0] if self.share else self.blocks[i]
-            out = block(x)
-
-            # 注意力增强（突出重要区域）
-            if self.attentions is not None:
-                attn = self.attentions[i](out)
-                out = out * attn + out  # 残差注意力
-
-            outs.append(out)
+            outs.append(block(x))
         return outs
