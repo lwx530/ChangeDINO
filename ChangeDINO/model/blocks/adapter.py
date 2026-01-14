@@ -118,4 +118,12 @@ class DenseAdapterLite(nn.Module):
             )
             block = self.blocks[0] if self.share else self.blocks[i]
             outs.append(block(x))
+
+        # === 直接在这里添加高频增强 ===
+        for i in range(len(outs)):
+            # 简单的高通滤波：原始 - 低通(均值滤波)
+            low_freq = F.avg_pool2d(outs[i], kernel_size=3, stride=1, padding=1)
+            high_freq = outs[i] - low_freq
+            outs[i] = outs[i] + 0.15 * high_freq  # 增强15%
+
         return outs
