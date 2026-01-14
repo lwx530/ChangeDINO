@@ -101,6 +101,8 @@ class DenseAdapterLite(nn.Module):
                 [SepAdapterBlock(in_dim, out_dim, r=bottleneck) for _ in self.sizes]
             )
         self.share = share
+        # 新增：可学习高频增强权重
+        self.high_freq_weight = nn.Parameter(torch.tensor(0.15))
 
     def forward(self, feats):
         """
@@ -119,11 +121,11 @@ class DenseAdapterLite(nn.Module):
             block = self.blocks[0] if self.share else self.blocks[i]
             outs.append(block(x))
 
-        # === 直接在这里添加高频增强 ===
-        for i in range(len(outs)):
-            # 简单的高通滤波：原始 - 低通(均值滤波)
-            low_freq = F.avg_pool2d(outs[i], kernel_size=3, stride=1, padding=1)
+        # === 新增：可学习的高频增强 ===
+        weight = torch.clamp(self.high_freq_weight, 0, 0.3)
+        for i in range(min(2, len(outs))):  # 只增强前2层
+            low_freq = F.avg_pool2d(outs[i], 3, stride=1, padding=1)
             high_freq = outs[i] - low_freq
-            outs[i] = outs[i] + 0.15 * high_freq  # 增强15%
+            outs[i] = outs[i] + weight * high_freq
 
         return outs
