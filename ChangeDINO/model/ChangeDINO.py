@@ -101,7 +101,7 @@ class Encoder(nn.Module):
         dense_out_dim = fpn_channels * 2
         self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids)
         self.dense_adp = DenseAdapterLite(
-            in_dim=1024, out_dim=dense_out_dim, bottleneck=fpn_channels // 2
+            in_dim=1024, out_dim=dense_out_dim, bottleneck=fpn_channels // 2, use_attention=True, attention_type="residual",
         )
         self.pff = PyramidFeatureFusion(
             in_dims=[fpn_channels] * 4,

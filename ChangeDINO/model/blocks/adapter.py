@@ -89,9 +89,15 @@ class DenseAdapterLite(nn.Module):
         sizes=(64, 32, 16, 8),
         bottleneck=64,
         share=False,
+        # ===== 新增参数 =====
+        use_attention=False,
+        attention_type="spatial",  # "spatial"或"residual"
     ):
         super().__init__()
         self.sizes = list(sizes)
+        self.use_attention = use_attention
+        self.attention_type = attention_type
+
         if share:
             self.blocks = nn.ModuleList(
                 [SepAdapterBlock(in_dim, out_dim, r=bottleneck)]
@@ -101,8 +107,31 @@ class DenseAdapterLite(nn.Module):
                 [SepAdapterBlock(in_dim, out_dim, r=bottleneck) for _ in self.sizes]
             )
         self.share = share
-        # 新增：可学习高频增强权重
-        self.high_freq_weight = nn.Parameter(torch.tensor(0.15))
+
+        # ===== 新增：注意力模块 =====
+        if self.use_attention:
+            print(f"[INFO] Adapter启用{attention_type}注意力")
+
+            if attention_type == "spatial":
+                # 空间注意力版本
+                self.attention_layers = nn.ModuleList([
+                    nn.Sequential(
+                        nn.Conv2d(out_dim, out_dim // 4, 1),
+                        nn.ReLU(),
+                        nn.Conv2d(out_dim // 4, 1, 1),
+                        nn.Sigmoid()
+                    ) for _ in range(len(self.sizes))
+                ])
+            elif attention_type == "residual":
+                # 残差注意力版本（更稳健）
+                self.attention_layers = nn.ModuleList([
+                    nn.Sequential(
+                        nn.Conv2d(out_dim, out_dim // 2, 1),
+                        nn.ReLU(),
+                        nn.Conv2d(out_dim // 2, out_dim, 1),
+                        nn.Sigmoid()
+                    ) for _ in range(len(self.sizes))
+                ])
 
     def forward(self, feats):
         """
@@ -121,11 +150,22 @@ class DenseAdapterLite(nn.Module):
             block = self.blocks[0] if self.share else self.blocks[i]
             outs.append(block(x))
 
-        # === 新增：可学习的高频增强 ===
-        weight = torch.clamp(self.high_freq_weight, 0, 0.3)
-        for i in range(min(2, len(outs))):  # 只增强前2层
-            low_freq = F.avg_pool2d(outs[i], 3, stride=1, padding=1)
-            high_freq = outs[i] - low_freq
-            outs[i] = outs[i] + weight * high_freq
+        # ===== 新增：注意力增强 =====
+        if self.use_attention:
+            enhanced_outs = []
+            for i, out in enumerate(outs):
+                attention = self.attention_layers[i](out)
+
+                if self.attention_type == "spatial":
+                    # 空间注意力：[B, 1, H, W]
+                    enhanced = out * (1.0 + 0.3 * attention)
+                elif self.attention_type == "residual":
+                    # 残差注意力：[B, C, H, W]
+                    # 学习如何调整特征，不是简单加权
+                    enhanced = out + 0.5 * attention * out
+
+                enhanced_outs.append(enhanced)
+
+            return enhanced_outs
 
         return outs
