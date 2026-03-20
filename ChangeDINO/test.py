@@ -23,8 +23,8 @@ if __name__ == "__main__":
     model = create_model(opt)
 
     # 2. 创建可视化保存目录（关键：新增，与预测结果目录区分）
-    vis_save_dir = os.path.join(opt.checkpoint_dir, opt.name, "feature_vis")
-    os.makedirs(vis_save_dir, exist_ok=True)
+    # vis_save_dir = os.path.join(opt.checkpoint_dir, opt.name, "feature_vis")
+    # os.makedirs(vis_save_dir, exist_ok=True)
 
     tbar = tqdm(test_data, ncols=80)
     # total_iters = test_size
@@ -44,16 +44,31 @@ if __name__ == "__main__":
     model.eval()
     with torch.no_grad():
         for i, _data in enumerate(tbar):
-            img_tensor = _data["image"].cuda()  # 原图张量 [B,3,H,W]
-            val_pred, dino_feats, adapter_feats = model.inference(_data["image"].cuda())
+            # img_tensor = _data["image"].cuda()  # 原图张量 [B,3,H,W]
+            val_pred = model.inference(_data["image"].cuda())
+            # val_pred, dino_feats, adapter_feats = model.inference(_data["image"].cuda())
             # update metric
             val_target = _data["label"].detach()
 
-            # 1. 获取概率图
+            '''# 1. 获取概率图
             if val_pred.shape[1] == 2:
                 val_pred_prob = torch.softmax(val_pred.detach(), dim=1)[:, 1]
+                
             else:
-                val_pred_prob = torch.sigmoid(val_pred.detach().squeeze(1))
+                val_pred_prob = torch.sigmoid(val_pred.detach().squeeze(1))'''
+
+            # ===== 重新安全计算概率 =====
+            scale = 1.8
+
+            logits = val_pred.detach() * scale
+
+            if logits.shape[1] == 2:
+                probs = torch.softmax(logits, dim=1)
+                val_pred_prob = probs[:, 1, :, :]  # 明确取第2类
+            else:
+                val_pred_prob = torch.sigmoid(logits[:, 0, :, :])
+
+            # print("val_pred_prob shape:", val_pred_prob.shape)
 
             # 2. 确保标签是二维
             if val_target.dim() == 4:
@@ -82,7 +97,7 @@ if __name__ == "__main__":
                         os.path.join(test_save_path, _data["fname"][j])
                     )
 
-            # 4. 特征可视化核心逻辑（关键：新增，批量处理每个batch的每张图片）
+            '''# 4. 特征可视化核心逻辑（关键：新增，批量处理每个batch的每张图片）
             for j in range(img_tensor.shape[0]):
                 # 提取单张图片的所有数据（去除batch维度）
                 img_single = img_tensor[j]  # 原图 [3,H,W]
@@ -98,7 +113,7 @@ if __name__ == "__main__":
                     save_dir=vis_save_dir,
                     img_name=img_name,
                     dino_sizes=[64, 32, 16, 8]  # 与Encoder中DefectAdapter的sizes完全一致
-                )
+                )'''
 
         # 获取WPFormer指标结果
         M_result = M.get_results()
@@ -106,6 +121,34 @@ if __name__ == "__main__":
         FM_result = FM.get_results()
         SM_result = SM.get_results()
         WFM_result = WFM.get_results()
+
+        # ====== 计算 Precision / Recall ======
+        import numpy as np
+
+        all_precisions = np.array(FM.precisions)  # [N, 256]
+        all_recalls = np.array(FM.recalls)  # [N, 256]
+        all_fms = np.array(FM.changeable_fms)  # [N, 256]
+
+        mean_precision_curve = all_precisions.mean(axis=0)
+        mean_recall_curve = all_recalls.mean(axis=0)
+        mean_f_curve = all_fms.mean(axis=0)
+
+        mean_precision = mean_precision_curve.mean()
+        mean_recall = mean_recall_curve.mean()
+
+        best_idx = np.argmax(mean_f_curve)
+
+        best_precision = mean_precision_curve[best_idx]
+        best_recall = mean_recall_curve[best_idx]
+
+        print("\n" + "=" * 60)
+        print("Precision / Recall Analysis:")
+        print("=" * 60)
+        print(f"Mean Precision: {mean_precision:.6f}")
+        print(f"Mean Recall: {mean_recall:.6f}")
+        print(f"Best Threshold Precision: {best_precision:.6f}")
+        print(f"Best Threshold Recall: {best_recall:.6f}")
+        print("=" * 60)
 
         val_scores = {
             'MAE': M_result['mae'],

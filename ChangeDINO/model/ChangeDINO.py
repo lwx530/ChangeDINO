@@ -5,11 +5,120 @@ import timm
 
 from .blocks.fpn import FPN, DsBnRelu
 from .blocks.cbam import CBAM
-from .blocks.adapter import DINOV3Wrapper, DenseAdapterLite
+from .blocks.adapter import DINOV3Wrapper, DenseAdapterLite, DefectAdapter
 from .blocks.diffatts import TransformerBlock
 from .blocks.refine import LearnableSoftMorph
 from .backbone.mobilenetv2 import mobilenet_v2
 
+
+class DiscreteWaveletTransform(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        # x: [B, C, H, W]
+        b, c, h, w = x.shape
+
+        # 这里的实现模拟了 Haar 小波变换
+        # 将图像 reshape 成 [B, C, H/2, 2, W/2, 2]
+        x_reshaped = x.view(b, c, h // 2, 2, w // 2, 2)
+
+        # 提取四个分量: x00(左上), x01(右上), x10(左下), x11(右下)
+        x00 = x_reshaped[:, :, :, 0, :, 0]  # Even rows, Even cols
+        x01 = x_reshaped[:, :, :, 0, :, 1]  # Even rows, Odd cols
+        x10 = x_reshaped[:, :, :, 1, :, 0]  # Odd rows, Even cols
+        x11 = x_reshaped[:, :, :, 1, :, 1]  # Odd rows, Odd cols
+
+        # Haar Wavelet 公式
+        # LL: Low frequency (Approximation)
+        LL = x00 + x01 + x10 + x11
+        # LH: Horizontal High freq (Detail)
+        LH = x00 + x01 - x10 - x11
+        # HL: Vertical High freq (Detail)
+        HL = x00 - x01 + x10 - x11
+        # HH: Diagonal High freq (Detail)
+        HH = x00 - x01 - x10 + x11
+
+        # 为了数值稳定性，通常除以2 (有些实现除以4，这里保持量级一致即可)
+        return LL / 2, LH / 2, HL / 2, HH / 2
+
+
+class SemanticFrequencyDifferential(nn.Module):
+    """
+    改进方案3的核心模块：语义引导的频域差分
+    输入: Backbone的高频细节 + DINOv3的语义上下文
+    输出: 经过语义过滤的缺陷特征 (模拟 Difference Map)
+    """
+
+    def __init__(self, backbone_dim, dino_dim, out_dim):
+        super().__init__()
+        self.dwt = DiscreteWaveletTransform()
+
+        # 1. 高频特征融合层
+        # DWT产生3个高频分量(LH, HL, HH)，通道数变为 backbone_dim * 3
+        self.high_freq_fusion = nn.Sequential(
+            nn.Conv2d(backbone_dim * 3, out_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_dim),
+            nn.ReLU(inplace=True)
+        )
+
+        # 2. 语义门控生成器 (Semantic Gating)
+        # 将 DINO 特征转化为 0~1 的权重图
+        self.gate_generator = nn.Sequential(
+            nn.Conv2d(dino_dim, out_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_dim, out_dim, kernel_size=1),
+            nn.Sigmoid()  # 生成门控权重
+        )
+
+        # 3. 最终融合 (可选：是否把低频信息也加回去？)
+        # 方案3重点是高频，但为了恢复结构，通常保留一部分原始特征
+        self.final_proj = nn.Conv2d(out_dim, out_dim, kernel_size=1)
+
+    def forward(self, f_backbone, f_dino):
+        # f_backbone: [B, 128, H, W] (来自FPN)
+        # f_dino: [B, 256, H', W'] (来自Adapter)
+
+        # Step 1: 小波分解
+        # output size: H/2, W/2
+        LL, LH, HL, HH = self.dwt(f_backbone)
+
+        # Step 2: 聚合高频信息
+        high_freq = torch.cat([LH, HL, HH], dim=1)  # [B, 128*3, H/2, W/2]
+        high_freq_feat = self.high_freq_fusion(high_freq)  # [B, 128, H/2, W/2]
+
+        # Step 3: 处理语义特征生成门控
+        # DINO特征尺寸可能与DWT后的尺寸不一致，需要插值对齐
+        f_dino_resized = F.interpolate(
+            f_dino,
+            size=high_freq_feat.shape[2:],
+            mode='bilinear',
+            align_corners=False
+        )
+        gate = self.gate_generator(f_dino_resized)
+
+        # Step 4: 核心逻辑 - 语义抑制噪音
+        # Gate值越接近1，表示该高频大概率是缺陷；接近0表示是背景纹理
+        # 注意：这里我们假设DINO能识别"背景"，所以我们想要的是 "高频" AND "非背景"
+        # 或者让网络自己学习Gate：Gate高响应区域 = 缺陷区域
+        diff_map = high_freq_feat * gate
+
+        # Step 5: 恢复尺寸 (为了送入Detector)
+        # 上采样回 H, W
+        diff_map_up = F.interpolate(
+            diff_map,
+            size=f_backbone.shape[2:],
+            mode='bilinear',
+            align_corners=False
+        )
+
+        # 可选：加上原始FPN特征的残差，防止丢失过多结构信息
+        # out = self.final_proj(diff_map_up + f_backbone)
+        # 这里为了强调"差分"概念，我们直接返回处理后的高频差分图
+        out = self.final_proj(diff_map_up)
+
+        return out
 
 def get_backbone(backbone_name):
     if backbone_name == "mobilenetv2":
@@ -50,13 +159,13 @@ class PyramidFeatureFusion(nn.Module):
             DsBnRelu(in_dims[0] + hidden_dim, in_dims[0]), CBAM(in_dims[0], 8)
         )
 
-    def forward(self, feas, ds_feas):
+    def forward(self, feas, ds_fea):
         # process backbone (CNN) features
         x1, x2, x3, x4 = (
             feas  # [B, 128, 64, 64], [B, 128, 32, 32], [B, 128, 16, 16], [B, 128, 8, 8]
         )
         a1, a2, a3, a4 = (
-            ds_feas  # [B, 256, 64, 64], [B, 256, 32, 32], [B, 256, 16, 16], [B, 256, 8, 8]
+            ds_fea # [B, 256, 64, 64], [B, 256, 32, 32], [B, 256, 16, 16], [B, 256, 8, 8]
         )
 
         x4 = torch.cat([x4, a4], 1)
@@ -86,6 +195,8 @@ class Encoder(nn.Module):
             dino_weight="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
             device="cuda",
             extract_ids=[5, 11, 17, 23],
+            # use_wt_aug=True,  # 新增：是否使用小波增强
+            # wt_aug_prob=0.5,  # 新增：增强概率
             **kwargs,
     ):
         super().__init__()
@@ -99,16 +210,38 @@ class Encoder(nn.Module):
             beta_mode=beta_mode,
         )
         dense_out_dim = fpn_channels * 2
-        self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids)
+        self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids, use_aquastyle=True)
+
         self.dense_adp = DenseAdapterLite(
-            in_dim=1024, out_dim=dense_out_dim, bottleneck=fpn_channels // 2, use_attention=True, attention_type="residual",
+            in_dim=1024, out_dim=dense_out_dim, bottleneck=fpn_channels // 2,
         )
+
+        # ========== 关键修改：替换DenseAdapterLite为4个层级化Adapter ==========
+        self.defect_adapter = DefectAdapter(
+            in_dim=1024,
+            out_dim=dense_out_dim,
+            sizes=(64, 32, 16, 8),  # 保持与原DenseAdapterLite相同的目标尺寸
+            bottleneck=fpn_channels // 2,  # 复用原bottleneck逻辑（128//2=64）
+            share=False,  # 保持与原一致（可根据需求改为True）
+        )
+
         self.pff = PyramidFeatureFusion(
             in_dims=[fpn_channels] * 4,
             dense_dim=1024,
             patch_size=self.dino.patch_size,
             hidden_dim=dense_out_dim,
         )
+
+        # 4. [新增] 语义频域差分模块 (SFD)
+        # 我们有4个层级的特征，所以需要4个SFD模块
+        # 输入: FPN特征(128) + Adapter特征(256) -> 输出(128)
+        self.sfd_modules = nn.ModuleList([
+            SemanticFrequencyDifferential(
+                backbone_dim=fpn_channels,  # 128
+                dino_dim=dense_out_dim,  # 256
+                out_dim=fpn_channels  # 128 (必须匹配Detector的输入维度)
+            ) for _ in range(4)
+        ])
 
     def forward(self, x):
         """
@@ -121,13 +254,35 @@ class Encoder(nn.Module):
 
         ds_fea = self.dino(x)  # [B, N, C]
 
+        # 直接调用新Adapter（输入输出格式与原DenseAdapterLite完全一致）
+        # ds_fea_adapted = self.defect_adapter(ds_fea)
+
+        '''# 添加调试
+        print(f"defect_adapter 输出类型: {type(ds_fea_adapted)}")
+        if isinstance(ds_fea_adapted, list):
+            print(f"defect_adapter 输出列表长度: {len(ds_fea_adapted)}")
+            for i, feat in enumerate(ds_fea_adapted):
+                print(f"  输出[{i}] 形状: {feat.shape}")
+        else:
+            print(f"defect_adapter 输出形状: {ds_fea_adapted.shape}")'''
+
+
         # process dense features
-        ds_fea = self.dense_adp(ds_fea)
+        ds_fea_adapted = self.dense_adp(ds_fea)
 
-        fea = self.pff(fea, ds_fea)
+        fea = self.pff(fea, ds_fea_adapted)
 
+        '''# 计算 SFD (Semantic Frequency Differential)
+        diff_maps = []
+        for i in range(4):
+            # 输入: FPN特征 (包含丰富细节), Adapter特征 (包含语义)
+            # 输出: 差分图 (高频缺陷)
+            d_map = self.sfd_modules[i](fea[i], ds_fea_adapted[i])
+            diff_maps.append(d_map)'''
+
+        # return fea, ds_fea, ds_fea_adapted
         return fea
-
+        # return diff_maps
 
 class FuseGated(nn.Module):
     def __init__(self, dim):
@@ -287,15 +442,17 @@ class ChangeModel(nn.Module):
     def _forward(self, x):
         # for inference
         fea = self.encoder(x)
-        # fea2 = self.encoder(x2)
+        # fea, dino_feats, adapter_feats = self.encoder(x)      # 将DINOv3提取的特征图和经过adapter处理的特征图可视化
         pred, _, _, _ = self.detector(fea)
         pred = self.refiner(pred)
-        return pred
+        # return pred, dino_feats, adapter_feats      # 这个在测试时要用到可视化的时候用
+        return pred                   # 训练的时候用这个
 
     def forward(self, x):
         # for training
         ## change detection
         fea = self.encoder(x)
+        # fea, dino_feats, adapter_feats = self.encoder(x)      # 将DINOv3提取的特征图和经过adapter处理的特征图可视化
         # fea2 = self.encoder(x2)
 
         preds = self.detector(fea)
