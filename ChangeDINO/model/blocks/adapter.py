@@ -15,7 +15,7 @@ MODEL_TO_NUM_LAYERS = {
 }
 
 # 从DiveSeg复制的组件
-class StyleInjection(nn.Module):
+'''class StyleInjection(nn.Module):
     def __init__(self, dim):
         super().__init__()
         self.proj_a = nn.Linear(dim, dim)
@@ -62,10 +62,10 @@ class StyleExtractor(nn.Module):
         x = self.avgpool(x)
         bs, dim, _, _ = x.shape
         x = x.view(bs, dim, -1).transpose(1, 2)
-        return x
+        return x'''
 
 
-'''class DINOV3Wrapper(nn.Module):
+class DINOV3Wrapper(nn.Module):
     def __init__(
         self,
         # weights_path="dinov3/weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth",
@@ -104,9 +104,10 @@ class StyleExtractor(nn.Module):
                 feats_ = []
                 for i in range(len(self.extract_ids)):
                     feats_.append(feats[self.extract_ids[i]])  # [B, N, C]
-        return feats_'''
+        return feats_
 
-class DINOV3Wrapper(nn.Module):
+
+'''class DINOV3Wrapper(nn.Module):
     def __init__(
         self,
         # weights_path="dinov3/weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth",
@@ -202,7 +203,7 @@ class DINOV3Wrapper(nn.Module):
                         # print(feat.shape)
                     feats_.append(feat)
 
-        return feats_
+        return feats_'''
 
 
 class SepAdapterBlock(nn.Module):
@@ -271,82 +272,55 @@ class DenseAdapterLite(nn.Module):
         return outs
 
 
-# 第一版改版adapter
-'''class DefectAdapter(nn.Module):
-    """适配ViT-L/16，内置指定尺寸对齐，替换原有DenseAdapterLite"""
+class LinearAdapter(nn.Module):
+    """
+    源自 Meta DINOv3 官方评估代码 (linear_head.py) 的极简 Adapter。
+    只做通道投影（1x1 Conv）和空间对齐（Bilinear Interpolation）。
+    零空间卷积，最大程度保留 DINOv3 原生缺陷特征的锐利度。
+    """
+
     def __init__(
-        self,
-        in_dim=1024,
-        out_dim=256,
-        sizes=(64, 32, 16, 8),  # 与原DenseAdapterLite的目标尺寸一致
-        bottleneck=64,
-        share=False,
-        reduction=4
+            self,
+            in_dim=1024,  # DINOv3 ViT-L 的输出通道数
+            out_dim=256,  # 对齐到 fpn_channels * 2
+            sizes=(64, 32, 16, 8),  # 你的金字塔特征尺寸
     ):
         super().__init__()
         self.sizes = list(sizes)
-        self.share = share
 
-        # 缺陷适配核心模块（保留原SepAdapterBlock的瓶颈结构，新增缺陷特征捕捉）
-        class DefectAdapterBlock(nn.Module):
-            def __init__(self, in_dim, out_dim, bottleneck, reduction):
-                super().__init__()
-                self.bottleneck = nn.Conv2d(in_dim, bottleneck, 1, padding=0)  # 瓶颈降维
-                self.adapter = nn.Sequential(
-                    nn.BatchNorm2d(bottleneck),
-                    nn.SiLU(),
-                    nn.Conv2d(bottleneck, bottleneck, 3, padding=1, groups=bottleneck),  # DW-Conv聚焦缺陷局部
-                    nn.BatchNorm2d(bottleneck),
-                    nn.SiLU(),
-                    nn.Conv2d(bottleneck, out_dim, 1, padding=0)  # 升维到目标通道
-                )
-                self.residual = nn.Conv2d(in_dim, out_dim, 1, padding=0) if in_dim != out_dim else nn.Identity()
-                self.layer_norm = nn.LayerNorm(out_dim)
-
-            def forward(self, x):
-                # 瓶颈降维 + 缺陷特征适配 + 残差融合
-                bottleneck_feat = self.bottleneck(x)
-                adapter_feat = self.adapter(bottleneck_feat)
-                residual_feat = self.residual(x)
-                # 归一化（保持特征稳定性）
-                out = self.layer_norm((adapter_feat + residual_feat).permute(0, 2, 3, 1)).permute(0, 3, 2, 1)
-                return out
-
-        # 构建4个层级的Adapter Block（复用原share逻辑）
-        if share:
-            self.blocks = nn.ModuleList(
-                [DefectAdapterBlock(in_dim, out_dim, bottleneck, reduction)]
-            )
-        else:
-            self.blocks = nn.ModuleList(
-                [DefectAdapterBlock(in_dim, out_dim, bottleneck, reduction) for _ in self.sizes]
-            )
+        # 官方 Linear Head 做法：BN + 1x1 Conv 降维
+        self.projs = nn.ModuleList([
+            nn.Sequential(
+                nn.BatchNorm2d(in_dim),  # 官方习惯在投影前先对原始特征归一化
+                nn.Conv2d(in_dim, out_dim, kernel_size=1, bias=False)
+            ) for _ in self.sizes
+        ])
 
     def forward(self, feats):
         """
-        完全兼容原DenseAdapterLite的输入输出格式：
-        feats: list[4个tensor]，每个[B, 1024, H_i, W_i]（DINOv3中间特征）
-        return: list[4个tensor]，每个[B, 256, S_i, S_i]（S_i对应sizes的目标尺寸）
+        feats: DINOV3Wrapper 输出的 4 层特征，形状为 [B, 1024, H_d, W_d]
+        return: 尺寸和维度对齐后的 4 层特征，准备进入 PFF
         """
         outs = []
         for i, x in enumerate(feats):
-            # 1. 尺度对齐（完全复用原逻辑：插值到指定sizes[i]）
+            # 1. 通道降维 1024 -> 256
+            x_proj = self.projs[i](x)
+
+            # 2. 空间插值对齐到目标尺寸 (64, 32, 16, 8)
+            # 官方评估代码中广泛使用 bilinear 插值
             x_aligned = F.interpolate(
-                x,
+                x_proj,
                 size=(self.sizes[i], self.sizes[i]),
                 mode="bilinear",
                 align_corners=False,
-                antialias=True,
+                antialias=True  # DINO特征下采样建议开启抗锯齿
             )
-            # 2. 缺陷特征适配（共享/独立Block，与原逻辑一致）
-            block = self.blocks[0] if self.share else self.blocks[i]
-            x_adapted = block(x_aligned)
-            outs.append(x_adapted)
-        return outs'''
+            outs.append(x_aligned)
 
+        return outs
 
 # 第二版adapter
-class DefectAdapter(nn.Module):
+'''class DefectAdapter(nn.Module):
     """轻量版缺陷适配器：极简变换+强保DINOv3缺陷特征+轻量通道强化，完全兼容原接口"""
     def __init__(
         self,
@@ -416,14 +390,6 @@ class DefectAdapter(nn.Module):
     def forward(self, feats):
         """前向传播：与原逻辑完全一致，无缝衔接"""
 
-        '''print(f"defect_adapter 接收到的输入:")
-        print(f"  输入类型: {type(feats)}")
-        if isinstance(feats, list):
-            print(f"  输入长度: {len(feats)}")
-            for i, f in enumerate(feats):
-                print(f"  输入[{i}] 形状: {f.shape}")
-        else:
-            print(f"  输入形状: {feats.shape}")'''
 
         outs = []
         for i, x in enumerate(feats):
@@ -438,5 +404,5 @@ class DefectAdapter(nn.Module):
             x_adapted = block(x_aligned)
             # print(x_adapted.shape)
             outs.append(x_adapted)
-        return outs
+        return outs'''
 

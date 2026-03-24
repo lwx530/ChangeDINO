@@ -5,7 +5,7 @@ import timm
 
 from .blocks.fpn import FPN, DsBnRelu
 from .blocks.cbam import CBAM
-from .blocks.adapter import DINOV3Wrapper, DenseAdapterLite, DefectAdapter
+from .blocks.adapter import DINOV3Wrapper, DenseAdapterLite, LinearAdapter
 from .blocks.diffatts import TransformerBlock
 from .blocks.refine import LearnableSoftMorph
 from .backbone.mobilenetv2 import mobilenet_v2
@@ -210,19 +210,17 @@ class Encoder(nn.Module):
             beta_mode=beta_mode,
         )
         dense_out_dim = fpn_channels * 2
-        self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids, use_aquastyle=True)
+        self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids)
 
         self.dense_adp = DenseAdapterLite(
             in_dim=1024, out_dim=dense_out_dim, bottleneck=fpn_channels // 2,
         )
 
         # ========== 关键修改：替换DenseAdapterLite为4个层级化Adapter ==========
-        self.defect_adapter = DefectAdapter(
+        self.defect_adapter = LinearAdapter(
             in_dim=1024,
-            out_dim=dense_out_dim,
-            sizes=(64, 32, 16, 8),  # 保持与原DenseAdapterLite相同的目标尺寸
-            bottleneck=fpn_channels // 2,  # 复用原bottleneck逻辑（128//2=64）
-            share=False,  # 保持与原一致（可根据需求改为True）
+            out_dim=dense_out_dim,  # 即 256
+            sizes=(64, 32, 16, 8)
         )
 
         self.pff = PyramidFeatureFusion(
@@ -268,7 +266,7 @@ class Encoder(nn.Module):
 
 
         # process dense features
-        ds_fea_adapted = self.dense_adp(ds_fea)
+        ds_fea_adapted = self.defect_adapter(ds_fea)
 
         fea = self.pff(fea, ds_fea_adapted)
 
