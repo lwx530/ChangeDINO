@@ -8,10 +8,11 @@ from .blocks.cbam import CBAM
 from .blocks.adapter import DINOV3Wrapper, DenseAdapterLite, LinearAdapter
 from .blocks.diffatts import TransformerBlock
 from .blocks.refine import LearnableSoftMorph
+from .blocks.sfhm import SFHM
 from .backbone.mobilenetv2 import mobilenet_v2
 
 
-class DiscreteWaveletTransform(nn.Module):
+'''class DiscreteWaveletTransform(nn.Module):
     def __init__(self):
         super().__init__()
 
@@ -118,7 +119,7 @@ class SemanticFrequencyDifferential(nn.Module):
         # 这里为了强调"差分"概念，我们直接返回处理后的高频差分图
         out = self.final_proj(diff_map_up)
 
-        return out
+        return out'''
 
 def get_backbone(backbone_name):
     if backbone_name == "mobilenetv2":
@@ -195,8 +196,6 @@ class Encoder(nn.Module):
             dino_weight="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
             device="cuda",
             extract_ids=[5, 11, 17, 23],
-            # use_wt_aug=True,  # 新增：是否使用小波增强
-            # wt_aug_prob=0.5,  # 新增：增强概率
             **kwargs,
     ):
         super().__init__()
@@ -216,7 +215,6 @@ class Encoder(nn.Module):
             in_dim=1024, out_dim=dense_out_dim, bottleneck=fpn_channels // 2,
         )
 
-        # ========== 关键修改：替换DenseAdapterLite为4个层级化Adapter ==========
         self.defect_adapter = LinearAdapter(
             in_dim=1024,
             out_dim=dense_out_dim,  # 即 256
@@ -230,7 +228,24 @@ class Encoder(nn.Module):
             hidden_dim=dense_out_dim,
         )
 
-        # 4. [新增] 语义频域差分模块 (SFD)
+        # ==================== 新增：SFHM 前置处理模块 ====================
+        # 因为我们要把 FPN(128) 和 Adapter(256) 拼起来，维度会变成 384
+        # 需要先用一个 1x1 卷积降维回 128，再送入 SFHM
+        self.fusion_projs = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(fpn_channels + dense_out_dim, fpn_channels, kernel_size=1, bias=False),
+                nn.BatchNorm2d(fpn_channels),
+                nn.ReLU(inplace=True)
+            ) for _ in range(4)
+        ])
+
+        # 实例化 4 个尺度的 SFHM 模块
+        self.sfhm_modules = nn.ModuleList([
+            SFHM(in_dim=fpn_channels) for _ in range(4)
+        ])
+        # ===============================================================
+
+        '''# 4. [新增] 语义频域差分模块 (SFD)
         # 我们有4个层级的特征，所以需要4个SFD模块
         # 输入: FPN特征(128) + Adapter特征(256) -> 输出(128)
         self.sfd_modules = nn.ModuleList([
@@ -239,7 +254,7 @@ class Encoder(nn.Module):
                 dino_dim=dense_out_dim,  # 256
                 out_dim=fpn_channels  # 128 (必须匹配Detector的输入维度)
             ) for _ in range(4)
-        ])
+        ])'''
 
     def forward(self, x):
         """
@@ -252,23 +267,38 @@ class Encoder(nn.Module):
 
         ds_fea = self.dino(x)  # [B, N, C]
 
-        # 直接调用新Adapter（输入输出格式与原DenseAdapterLite完全一致）
-        # ds_fea_adapted = self.defect_adapter(ds_fea)
-
-        '''# 添加调试
-        print(f"defect_adapter 输出类型: {type(ds_fea_adapted)}")
-        if isinstance(ds_fea_adapted, list):
-            print(f"defect_adapter 输出列表长度: {len(ds_fea_adapted)}")
-            for i, feat in enumerate(ds_fea_adapted):
-                print(f"  输出[{i}] 形状: {feat.shape}")
-        else:
-            print(f"defect_adapter 输出形状: {ds_fea_adapted.shape}")'''
-
-
         # process dense features
         ds_fea_adapted = self.defect_adapter(ds_fea)
 
-        fea = self.pff(fea, ds_fea_adapted)
+        # ==================== 新增：空频混合增强逻辑 ====================
+        enhanced_feas = []
+
+        for i in range(4):
+            # 将对应尺度的 CNN 特征和 DINO 特征拼接: 128 + 256 = 384
+            fused = torch.cat([fea[i], ds_fea_adapted[i]], dim=1)
+
+            # 降维到 128
+            fused = self.fusion_projs[i](fused)
+
+            # ==========================================
+            # 核心：通过 SFHM 模块进行 2D-FFT 频域强化和空域提纯
+            # 这里会自动放大高频缺陷（划痕/裂纹），抑制低频背景
+            # ==========================================
+            sfhm_out = self.sfhm_modules[i](fused)
+
+            enhanced_feas.append(sfhm_out)
+            # 为了兼容你原有的 PFF (它期望收到两组特征去运算)
+            # 我们直接把 SFHM 提纯后的特征映射回 256 维当作纯净的 ds_fea_adapted
+            # 或者最简单的做法是：不用 PFF 里的 ds_fea_adapted 逻辑了，但为了少改代码，保持双路输入
+        # ===============================================================
+
+        # 4. 把经过 SFHM 极致强化的特征，送入你原有的 PFF 做最终金字塔融合
+        # 注意：因为你的 PFF 是把 fea 和 ds_fea 再次拼接处理，
+        # 为了不破坏你的原网络拓扑，fea 传入增强后的，ds_fea 依然传入原本的。
+        # 这样 enhanced_feas 里的高频极度锐利，PFF 融合时会更依赖这些高频信息。
+        final_fea = self.pff(enhanced_feas, ds_fea_adapted)
+
+        # fea = self.pff(fea, ds_fea_adapted)
 
         '''# 计算 SFD (Semantic Frequency Differential)
         diff_maps = []
@@ -279,7 +309,7 @@ class Encoder(nn.Module):
             diff_maps.append(d_map)'''
 
         # return fea, ds_fea, ds_fea_adapted
-        return fea
+        return final_fea
         # return diff_maps
 
 class FuseGated(nn.Module):
