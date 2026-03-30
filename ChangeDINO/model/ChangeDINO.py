@@ -2,6 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import timm
+import os
+import matplotlib.pyplot as plt
+import numpy as np
 
 from .blocks.fpn import FPN, DsBnRelu
 from .blocks.cbam import CBAM
@@ -120,6 +123,36 @@ class SemanticFrequencyDifferential(nn.Module):
         out = self.final_proj(diff_map_up)
 
         return out'''
+
+
+def save_feature_map(feature_tensor, save_name, save_dir="vis_results-3"):
+    """
+    将 [B, C, H, W] 的特征图压缩并保存为热力图
+    """
+    # 确保保存目录存在
+    os.makedirs(save_dir, exist_ok=True)
+
+    # 1. 取 Batch 中的第一张图: 变成 [C, H, W]
+    if feature_tensor.dim() == 4:
+        feat = feature_tensor[0]
+    else:
+        feat = feature_tensor
+
+    # 2. 沿通道维度取平均，得到空间响应强度: [H, W]
+    # 使用 .detach().cpu().numpy() 将其转为 numpy 数组以便画图
+    feat_map = torch.mean(feat, dim=0).detach().cpu().numpy()
+
+    # 可选：对特征图进行归一化，让图像对比度更好
+    feat_map = (feat_map - np.min(feat_map)) / (np.max(feat_map) - np.min(feat_map) + 1e-8)
+
+    # 3. 绘制并保存
+    plt.figure(figsize=(6, 6))
+    plt.imshow(feat_map, cmap='jet')  # jet 伪彩色：红色代表高响应，蓝色代表低响应
+    plt.colorbar(fraction=0.046, pad=0.04)
+    plt.axis('off')
+    plt.title(save_name)
+    plt.savefig(os.path.join(save_dir, f"{save_name}.png"), bbox_inches='tight')
+    plt.close()
 
 def get_backbone(backbone_name):
     if backbone_name == "mobilenetv2":
@@ -262,6 +295,12 @@ class Encoder(nn.Module):
         x2: [B, 3, H, W]
         return: [B, 1, H, W]
         """
+
+        # ==================== 可视化控制开关 ====================
+        # 建议：仅在 batch_size=1 且你想看图的时候设为 True，平时训练设为 False
+        VISUALIZE = True
+        # ========================================================
+
         fea = self.backbone.forward(x)
         fea = self.fpn(fea[-4:])  # t1_p1, t1_p2, t1_p3, t1_p4
 
@@ -307,6 +346,21 @@ class Encoder(nn.Module):
             # 输出: 差分图 (高频缺陷)
             d_map = self.sfd_modules[i](fea[i], ds_fea_adapted[i])
             diff_maps.append(d_map)'''
+
+        # ==================== 执行可视化 ====================
+        if VISUALIZE:
+            # 为了防止生成太多图，我们只取尺度最大、细节最丰富的那一层（索引 0，对应 64x64 或 1/4 下采样层）
+            save_feature_map(fea[0], "1_CNN_FPN_Layer0")
+
+            # 因为原始 DINO 特征 [B, N, C] 是序列，你需要先把它 reshape 成二维才能画图
+            # 你的代码里 patch_size 通常是 14 或 16，这里假设是 16。为了简单，我们直接看 adapted 之后的
+            save_feature_map(ds_fea_adapted[0], "2_DINO_Adapted_Layer0")
+
+            save_feature_map(enhanced_feas[0], "3_SFHM_Output_Layer0")
+            save_feature_map(final_fea[0], "4_PFF_Final_Layer0")
+
+            print("✅ 特征图已保存至 ./vis_results 目录！")
+        # ====================================================
 
         # return fea, ds_fea, ds_fea_adapted
         return final_fea
