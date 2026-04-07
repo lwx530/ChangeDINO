@@ -228,7 +228,8 @@ class Encoder(nn.Module):
             # dino_weight="dinov3/weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth",
             dino_weight="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
             device="cuda",
-            extract_ids=[5, 11, 17, 23],
+            # extract_ids=[5, 11, 17, 23],
+            extract_ids=[4, 6, 8, 10, 12, 14, 16, 18],
             **kwargs,
     ):
         super().__init__()
@@ -298,13 +299,31 @@ class Encoder(nn.Module):
 
         # ==================== 可视化控制开关 ====================
         # 建议：仅在 batch_size=1 且你想看图的时候设为 True，平时训练设为 False
-        VISUALIZE = True
+        VISUALIZE = False
         # ========================================================
 
         fea = self.backbone.forward(x)
         fea = self.fpn(fea[-4:])  # t1_p1, t1_p2, t1_p3, t1_p4
 
-        ds_fea = self.dino(x)  # [B, N, C]
+
+        # ds_fea = self.dino(x)  # [B, N, C]
+
+        # 2. DINOv3 支路获取 8 层语义特征
+        raw_ds_fea = self.dino(x)  # 这里 raw_ds_fea 是一个包含 8 个张量的 list
+
+        # ==================== 新增：Dinomaly 分组聚合逻辑 ====================
+        # 将 8 层特征两两相加，聚合成 4 层，完美对齐 CNN 的 4 层
+        # Level 1 (浅层)  : layer 4 + layer 6
+        # Level 2 (中浅层): layer 8 + layer 10
+        # Level 3 (中深层): layer 12 + layer 14
+        # Level 4 (深层)  : layer 16 + layer 18
+        ds_fea = [
+            raw_ds_fea[0] + raw_ds_fea[1],
+            raw_ds_fea[2] + raw_ds_fea[3],
+            raw_ds_fea[4] + raw_ds_fea[5],
+            raw_ds_fea[6] + raw_ds_fea[7]
+        ]
+        # =====================================================================
 
         # process dense features
         ds_fea_adapted = self.defect_adapter(ds_fea)

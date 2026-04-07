@@ -10,7 +10,7 @@ class Options:
         self.parser.add_argument(
             "--gpu_ids", type=str, default="2", help="gpu ids: e.g. 0. use -1 for CPU"
         )
-        self.parser.add_argument("--name", type=str, default="ESDI")
+        self.parser.add_argument("--name", type=str, default="ESDI-3")
         self.parser.add_argument(
             "--dataroot", type=str, default="/home/linweixuan/ChangeDINO/datasets"
         )
@@ -42,7 +42,7 @@ class Options:
         self.parser.add_argument("--gamma_mode", type=str, default="SE")
         self.parser.add_argument("--beta_mode", type=str, default="contextgatedconv")
         self.parser.add_argument('--n_layers', nargs='+', type=int, default=[1, 1, 1, 1])
-        self.parser.add_argument('--extract_ids', nargs='+', type=int, default=[5, 11, 17, 23])
+        self.parser.add_argument('--extract_ids', nargs='+', type=int, default=[4, 6, 8, 10, 12, 14, 16, 18])
         self.parser.add_argument("--alpha", type=float, default=0.25)
         self.parser.add_argument("--gamma", type=int, default=4, help="gamma for Focal loss")
 
