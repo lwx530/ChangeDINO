@@ -229,7 +229,7 @@ class Encoder(nn.Module):
             dino_weight="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
             device="cuda",
             # extract_ids=[5, 11, 17, 23],
-            extract_ids=[4, 6, 8, 10, 12, 14, 16, 18],
+            extract_ids=list(range(24)),
             **kwargs,
     ):
         super().__init__()
@@ -311,18 +311,19 @@ class Encoder(nn.Module):
         # 2. DINOv3 支路获取 8 层语义特征
         raw_ds_fea = self.dino(x)  # 这里 raw_ds_fea 是一个包含 8 个张量的 list
 
-        # ==================== 新增：Dinomaly 分组聚合逻辑 ====================
-        # 将 8 层特征两两相加，聚合成 4 层，完美对齐 CNN 的 4 层
-        # Level 1 (浅层)  : layer 4 + layer 6
-        # Level 2 (中浅层): layer 8 + layer 10
-        # Level 3 (中深层): layer 12 + layer 14
-        # Level 4 (深层)  : layer 16 + layer 18
-        ds_fea = [
-            raw_ds_fea[0] + raw_ds_fea[1],
-            raw_ds_fea[2] + raw_ds_fea[3],
-            raw_ds_fea[4] + raw_ds_fea[5],
-            raw_ds_fea[6] + raw_ds_fea[7]
-        ]
+        # ==================== 更新：24层全特征分组聚合逻辑 ====================
+        # 将 24 层特征等分为 4 组，每组 6 层。
+        # 采用求平均 (mean) 的方式，保证特征的量级稳定
+        ds_fea = []
+        for i in range(4):
+            # 取出当前层的 6 个特征图
+            group_feats = raw_ds_fea[i * 6: (i + 1) * 6]
+
+            # 将 6 个特征图在新的维度(dim=0)堆叠起来，然后求平均
+            # shape 变化: 6 个 [B, N, C] -> [6, B, N, C] -> mean -> [B, N, C]
+            group_mean_feat = torch.mean(torch.stack(group_feats, dim=0), dim=0)
+
+            ds_fea.append(group_mean_feat)
         # =====================================================================
 
         # process dense features
