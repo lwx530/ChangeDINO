@@ -15,6 +15,33 @@ from .blocks.sfhm import SFHM
 from .backbone.mobilenetv2 import mobilenet_v2
 
 
+class InNetworkAdapterWrapper(nn.Module):
+    def __init__(self, original_block, dim=1024, bottleneck_dim=256):
+        super().__init__()
+        # 1. 挂载原始的 DINOv3 Block (冻结状态)
+        self.original_block = original_block
+
+        # 2. 瓶颈结构的线性 Adapter (1024 -> 256 -> 1024)
+        self.down = nn.Linear(dim, bottleneck_dim)
+        self.act = nn.GELU()
+        self.up = nn.Linear(bottleneck_dim, dim)
+
+        # 3. 核心：零初始化，确保初始状态等价于原生 DINOv3
+        nn.init.zeros_(self.up.weight)
+        nn.init.zeros_(self.up.bias)
+
+    def forward(self, x, *args, **kwargs):
+        # 第一步：数据正常穿过原始的 DINOv3 层。
+        # 必须带上 *args, **kwargs，因为 DINOv3 会传入 rope_sincos 等位置编码参数
+        out = self.original_block(x, *args, **kwargs)
+
+        # 第二步：将输出特征送入 Adapter 进行特异性加工
+        adapter_out = self.up(self.act(self.down(out)))
+
+        # 第三步：残差融合并返回。
+        # 这个返回值会顺着 DINOv3 的源码，作为输入直接流向下一层 (比如从第5层流向第6层)！
+        return out + adapter_out
+
 '''class DiscreteWaveletTransform(nn.Module):
     def __init__(self):
         super().__init__()
@@ -124,36 +151,6 @@ class SemanticFrequencyDifferential(nn.Module):
 
         return out'''
 
-
-def save_feature_map(feature_tensor, save_name, save_dir="vis_results-3"):
-    """
-    将 [B, C, H, W] 的特征图压缩并保存为热力图
-    """
-    # 确保保存目录存在
-    os.makedirs(save_dir, exist_ok=True)
-
-    # 1. 取 Batch 中的第一张图: 变成 [C, H, W]
-    if feature_tensor.dim() == 4:
-        feat = feature_tensor[0]
-    else:
-        feat = feature_tensor
-
-    # 2. 沿通道维度取平均，得到空间响应强度: [H, W]
-    # 使用 .detach().cpu().numpy() 将其转为 numpy 数组以便画图
-    feat_map = torch.mean(feat, dim=0).detach().cpu().numpy()
-
-    # 可选：对特征图进行归一化，让图像对比度更好
-    feat_map = (feat_map - np.min(feat_map)) / (np.max(feat_map) - np.min(feat_map) + 1e-8)
-
-    # 3. 绘制并保存
-    plt.figure(figsize=(6, 6))
-    plt.imshow(feat_map, cmap='jet')  # jet 伪彩色：红色代表高响应，蓝色代表低响应
-    plt.colorbar(fraction=0.046, pad=0.04)
-    plt.axis('off')
-    plt.title(save_name)
-    plt.savefig(os.path.join(save_dir, f"{save_name}.png"), bbox_inches='tight')
-    plt.close()
-
 def get_backbone(backbone_name):
     if backbone_name == "mobilenetv2":
         backbone = mobilenet_v2(pretrained=True, progress=True)
@@ -255,6 +252,22 @@ class Encoder(nn.Module):
             sizes=(64, 32, 16, 8)
         )
 
+        '''# ==================== 新增：内嵌式 Adapter 动态注入 ====================
+        # 目标层级：在第 5, 11, 17, 23 层的 Block 外面套上我们的 Wrapper
+        target_layers = [5, 11, 17, 23]
+
+        # ⚠️ 注意：这里的 `self.dino` 是你在 adapter.py 写的 DINOV3Wrapper 类。
+        # 你需要根据 DINOV3Wrapper 内部定义真实 DINO 模型的变量名，来找到 `blocks`。
+        # 假设真实模型在 wrapper 里叫做 `self.model`，那么路径就是 `self.dino.model.blocks`。
+        # 如果报错找不到 blocks，请查看 adapter.py 里你的实例化名称（也可能是 self.dino.dino.blocks 等）。
+
+        for idx in target_layers:
+            original_block = self.dino.model.blocks[idx]  # 提取原 Block
+            self.dino.model.blocks[idx] = InNetworkAdapterWrapper(
+                original_block, dim=1024, bottleneck_dim=256
+            )  # 偷梁换柱
+        # ===================================================================='''
+
         self.pff = PyramidFeatureFusion(
             in_dims=[fpn_channels] * 4,
             dense_dim=1024,
@@ -297,19 +310,13 @@ class Encoder(nn.Module):
         return: [B, 1, H, W]
         """
 
-        # ==================== 可视化控制开关 ====================
-        # 建议：仅在 batch_size=1 且你想看图的时候设为 True，平时训练设为 False
-        VISUALIZE = False
-        # ========================================================
-
         fea = self.backbone.forward(x)
         fea = self.fpn(fea[-4:])  # t1_p1, t1_p2, t1_p3, t1_p4
 
 
         # ds_fea = self.dino(x)  # [B, N, C]
 
-        # 2. DINOv3 支路获取 8 层语义特征
-        raw_ds_fea = self.dino(x)  # 这里 raw_ds_fea 是一个包含 8 个张量的 list
+        raw_ds_fea = self.dino(x)  # 获取24层
 
         # ==================== 更新：24层全特征分组聚合逻辑 ====================
         # 将 24 层特征等分为 4 组，每组 6 层。
@@ -324,7 +331,7 @@ class Encoder(nn.Module):
             group_mean_feat = torch.mean(torch.stack(group_feats, dim=0), dim=0)
 
             ds_fea.append(group_mean_feat)
-        # =====================================================================
+        # ==========================================================
 
         # process dense features
         ds_fea_adapted = self.defect_adapter(ds_fea)
@@ -366,21 +373,6 @@ class Encoder(nn.Module):
             # 输出: 差分图 (高频缺陷)
             d_map = self.sfd_modules[i](fea[i], ds_fea_adapted[i])
             diff_maps.append(d_map)'''
-
-        # ==================== 执行可视化 ====================
-        if VISUALIZE:
-            # 为了防止生成太多图，我们只取尺度最大、细节最丰富的那一层（索引 0，对应 64x64 或 1/4 下采样层）
-            save_feature_map(fea[0], "1_CNN_FPN_Layer0")
-
-            # 因为原始 DINO 特征 [B, N, C] 是序列，你需要先把它 reshape 成二维才能画图
-            # 你的代码里 patch_size 通常是 14 或 16，这里假设是 16。为了简单，我们直接看 adapted 之后的
-            save_feature_map(ds_fea_adapted[0], "2_DINO_Adapted_Layer0")
-
-            save_feature_map(enhanced_feas[0], "3_SFHM_Output_Layer0")
-            save_feature_map(final_fea[0], "4_PFF_Final_Layer0")
-
-            print("✅ 特征图已保存至 ./vis_results 目录！")
-        # ====================================================
 
         # return fea, ds_fea, ds_fea_adapted
         return final_fea

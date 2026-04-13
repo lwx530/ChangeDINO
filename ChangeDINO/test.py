@@ -8,7 +8,6 @@ from util.WPFormer_metrics import MAE, Emeasure, Fmeasure, Smeasure, WeightedFme
 from option import Options
 from data.cd_dataset import DataLoader
 from model.create_ChangeDINO import create_model
-from util.visualize import visualize_dino_adapter
 
 
 if __name__ == "__main__":
