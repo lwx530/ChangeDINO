@@ -177,7 +177,23 @@ class PyramidFeatureFusion(nn.Module):
         self.hidden_dim = hidden_dim
         self.patch_size = patch_size
 
-        self.c4 = nn.Sequential(
+        # 定义一个简单的纯卷积融合块
+        def make_fusion_block(in_channels, out_channels):
+            return nn.Sequential(
+                # 第一步：你的原有的深度可分离卷积/特征降维块
+                DsBnRelu(in_channels, out_channels),
+                # 第二步：纯卷积块（替代了原来的 CBAM）
+                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True)
+            )
+
+        self.c4 = make_fusion_block(in_dims[3] + hidden_dim, in_dims[3])
+        self.c3 = make_fusion_block(in_dims[2] + hidden_dim, in_dims[2])
+        self.c2 = make_fusion_block(in_dims[1] + hidden_dim, in_dims[1])
+        self.c1 = make_fusion_block(in_dims[0] + hidden_dim, in_dims[0])
+
+        '''self.c4 = nn.Sequential(
             DsBnRelu(in_dims[3] + hidden_dim, in_dims[3]), CBAM(in_dims[3], 8)
         )
         self.c3 = nn.Sequential(
@@ -188,7 +204,7 @@ class PyramidFeatureFusion(nn.Module):
         )
         self.c1 = nn.Sequential(
             DsBnRelu(in_dims[0] + hidden_dim, in_dims[0]), CBAM(in_dims[0], 8)
-        )
+        )'''
 
     def forward(self, feas, ds_fea):
         # process backbone (CNN) features
