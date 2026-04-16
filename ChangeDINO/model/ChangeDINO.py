@@ -177,7 +177,7 @@ class PyramidFeatureFusion(nn.Module):
         self.hidden_dim = hidden_dim
         self.patch_size = patch_size
 
-        # 定义一个简单的纯卷积融合块
+        '''# 定义一个简单的纯卷积融合块
         def make_fusion_block(in_channels, out_channels):
             return nn.Sequential(
                 # 第一步：你的原有的深度可分离卷积/特征降维块
@@ -191,9 +191,9 @@ class PyramidFeatureFusion(nn.Module):
         self.c4 = make_fusion_block(in_dims[3] + hidden_dim, in_dims[3])
         self.c3 = make_fusion_block(in_dims[2] + hidden_dim, in_dims[2])
         self.c2 = make_fusion_block(in_dims[1] + hidden_dim, in_dims[1])
-        self.c1 = make_fusion_block(in_dims[0] + hidden_dim, in_dims[0])
+        self.c1 = make_fusion_block(in_dims[0] + hidden_dim, in_dims[0])'''
 
-        '''self.c4 = nn.Sequential(
+        self.c4 = nn.Sequential(
             DsBnRelu(in_dims[3] + hidden_dim, in_dims[3]), CBAM(in_dims[3], 8)
         )
         self.c3 = nn.Sequential(
@@ -204,7 +204,7 @@ class PyramidFeatureFusion(nn.Module):
         )
         self.c1 = nn.Sequential(
             DsBnRelu(in_dims[0] + hidden_dim, in_dims[0]), CBAM(in_dims[0], 8)
-        )'''
+        )
 
     def forward(self, feas, ds_fea):
         # process backbone (CNN) features
@@ -357,16 +357,16 @@ class Encoder(nn.Module):
 
         for i in range(4):
             # 将对应尺度的 CNN 特征和 DINO 特征拼接: 128 + 256 = 384
-            fused = torch.cat([fea[i], ds_fea_adapted[i]], dim=1)
+            # fused = torch.cat([fea[i], ds_fea_adapted[i]], dim=1)
 
             # 降维到 128
-            fused = self.fusion_projs[i](fused)
+            # fused = self.fusion_projs[i](fused)
 
             # ==========================================
             # 核心：通过 SFHM 模块进行 2D-FFT 频域强化和空域提纯
             # 这里会自动放大高频缺陷（划痕/裂纹），抑制低频背景
             # ==========================================
-            sfhm_out = self.sfhm_modules[i](fused)
+            sfhm_out = self.sfhm_modules[i](fea[i])
 
             enhanced_feas.append(sfhm_out)
             # 为了兼容你原有的 PFF (它期望收到两组特征去运算)
