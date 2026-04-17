@@ -42,114 +42,27 @@ class InNetworkAdapterWrapper(nn.Module):
         # 这个返回值会顺着 DINOv3 的源码，作为输入直接流向下一层 (比如从第5层流向第6层)！
         return out + adapter_out
 
-'''class DiscreteWaveletTransform(nn.Module):
-    def __init__(self):
+class SRFMaskGenerator(nn.Module):
+    """
+    SRF (Spatial Refinement) 掩码生成器
+    作用：从最浅层、物理边界最清晰的 CNN 特征中，提取出一个 0~1 的高清边界权重图。
+    """
+    def __init__(self, in_channels=128):
         super().__init__()
+        # 使用轻量级卷积将 128 维压缩到 1 维
+        self.mask_gen = nn.Sequential(
+            # 第一层：降维并提取关键边界
+            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            # 第二层：压缩为单通道灰度掩码
+            nn.Conv2d(64, 1, kernel_size=1, bias=True),
+            # 关键：Sigmoid 确保输出的乘法权重在 0 到 1 之间
+            nn.Sigmoid()
+        )
 
     def forward(self, x):
-        # x: [B, C, H, W]
-        b, c, h, w = x.shape
-
-        # 这里的实现模拟了 Haar 小波变换
-        # 将图像 reshape 成 [B, C, H/2, 2, W/2, 2]
-        x_reshaped = x.view(b, c, h // 2, 2, w // 2, 2)
-
-        # 提取四个分量: x00(左上), x01(右上), x10(左下), x11(右下)
-        x00 = x_reshaped[:, :, :, 0, :, 0]  # Even rows, Even cols
-        x01 = x_reshaped[:, :, :, 0, :, 1]  # Even rows, Odd cols
-        x10 = x_reshaped[:, :, :, 1, :, 0]  # Odd rows, Even cols
-        x11 = x_reshaped[:, :, :, 1, :, 1]  # Odd rows, Odd cols
-
-        # Haar Wavelet 公式
-        # LL: Low frequency (Approximation)
-        LL = x00 + x01 + x10 + x11
-        # LH: Horizontal High freq (Detail)
-        LH = x00 + x01 - x10 - x11
-        # HL: Vertical High freq (Detail)
-        HL = x00 - x01 + x10 - x11
-        # HH: Diagonal High freq (Detail)
-        HH = x00 - x01 - x10 + x11
-
-        # 为了数值稳定性，通常除以2 (有些实现除以4，这里保持量级一致即可)
-        return LL / 2, LH / 2, HL / 2, HH / 2
-
-
-class SemanticFrequencyDifferential(nn.Module):
-    """
-    改进方案3的核心模块：语义引导的频域差分
-    输入: Backbone的高频细节 + DINOv3的语义上下文
-    输出: 经过语义过滤的缺陷特征 (模拟 Difference Map)
-    """
-
-    def __init__(self, backbone_dim, dino_dim, out_dim):
-        super().__init__()
-        self.dwt = DiscreteWaveletTransform()
-
-        # 1. 高频特征融合层
-        # DWT产生3个高频分量(LH, HL, HH)，通道数变为 backbone_dim * 3
-        self.high_freq_fusion = nn.Sequential(
-            nn.Conv2d(backbone_dim * 3, out_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_dim),
-            nn.ReLU(inplace=True)
-        )
-
-        # 2. 语义门控生成器 (Semantic Gating)
-        # 将 DINO 特征转化为 0~1 的权重图
-        self.gate_generator = nn.Sequential(
-            nn.Conv2d(dino_dim, out_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_dim),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_dim, out_dim, kernel_size=1),
-            nn.Sigmoid()  # 生成门控权重
-        )
-
-        # 3. 最终融合 (可选：是否把低频信息也加回去？)
-        # 方案3重点是高频，但为了恢复结构，通常保留一部分原始特征
-        self.final_proj = nn.Conv2d(out_dim, out_dim, kernel_size=1)
-
-    def forward(self, f_backbone, f_dino):
-        # f_backbone: [B, 128, H, W] (来自FPN)
-        # f_dino: [B, 256, H', W'] (来自Adapter)
-
-        # Step 1: 小波分解
-        # output size: H/2, W/2
-        LL, LH, HL, HH = self.dwt(f_backbone)
-
-        # Step 2: 聚合高频信息
-        high_freq = torch.cat([LH, HL, HH], dim=1)  # [B, 128*3, H/2, W/2]
-        high_freq_feat = self.high_freq_fusion(high_freq)  # [B, 128, H/2, W/2]
-
-        # Step 3: 处理语义特征生成门控
-        # DINO特征尺寸可能与DWT后的尺寸不一致，需要插值对齐
-        f_dino_resized = F.interpolate(
-            f_dino,
-            size=high_freq_feat.shape[2:],
-            mode='bilinear',
-            align_corners=False
-        )
-        gate = self.gate_generator(f_dino_resized)
-
-        # Step 4: 核心逻辑 - 语义抑制噪音
-        # Gate值越接近1，表示该高频大概率是缺陷；接近0表示是背景纹理
-        # 注意：这里我们假设DINO能识别"背景"，所以我们想要的是 "高频" AND "非背景"
-        # 或者让网络自己学习Gate：Gate高响应区域 = 缺陷区域
-        diff_map = high_freq_feat * gate
-
-        # Step 5: 恢复尺寸 (为了送入Detector)
-        # 上采样回 H, W
-        diff_map_up = F.interpolate(
-            diff_map,
-            size=f_backbone.shape[2:],
-            mode='bilinear',
-            align_corners=False
-        )
-
-        # 可选：加上原始FPN特征的残差，防止丢失过多结构信息
-        # out = self.final_proj(diff_map_up + f_backbone)
-        # 这里为了强调"差分"概念，我们直接返回处理后的高频差分图
-        out = self.final_proj(diff_map_up)
-
-        return out'''
+        return self.mask_gen(x)
 
 def get_backbone(backbone_name):
     if backbone_name == "mobilenetv2":
@@ -291,6 +204,11 @@ class Encoder(nn.Module):
             hidden_dim=dense_out_dim,
         )
 
+        # 【新增】实例化 SRF 掩码生成器
+        # 我们将接收 FPN 输出的最高分辨率层 (通道数为 fpn_channels)
+        # =========================================================
+        self.srf_mask_gen = SRFMaskGenerator(in_channels=fpn_channels)
+
         # ==================== 新增：SFHM 前置处理模块 ====================
         # 因为我们要把 FPN(128) 和 Adapter(256) 拼起来，维度会变成 384
         # 需要先用一个 1x1 卷积降维回 128，再送入 SFHM
@@ -308,16 +226,14 @@ class Encoder(nn.Module):
         ])
         # ===============================================================
 
-        '''# 4. [新增] 语义频域差分模块 (SFD)
-        # 我们有4个层级的特征，所以需要4个SFD模块
-        # 输入: FPN特征(128) + Adapter特征(256) -> 输出(128)
-        self.sfd_modules = nn.ModuleList([
-            SemanticFrequencyDifferential(
-                backbone_dim=fpn_channels,  # 128
-                dino_dim=dense_out_dim,  # 256
-                out_dim=fpn_channels  # 128 (必须匹配Detector的输入维度)
+        dino_adapted_ch = fpn_channels * 2
+
+        self.dino_gates = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(dino_adapted_ch, 1, kernel_size=1, bias=True),
+                nn.Sigmoid()  # 压缩到 0~1 之间，作为概率权重
             ) for _ in range(4)
-        ])'''
+        ])
 
     def forward(self, x):
         """
@@ -329,6 +245,10 @@ class Encoder(nn.Module):
         fea = self.backbone.forward(x)
         fea = self.fpn(fea[-4:])  # t1_p1, t1_p2, t1_p3, t1_p4
 
+        # 【SRF 关键点 1】：提取“铅笔线稿”
+        # fea[0] 是分辨率最高(例如 64x64)、未经深层语义污染的物理细节特征
+        # =========================================================
+        highest_res_detail = fea[0]
 
         # ds_fea = self.dino(x)  # [B, N, C]
 
@@ -367,8 +287,15 @@ class Encoder(nn.Module):
             # 这里会自动放大高频缺陷（划痕/裂纹），抑制低频背景
             # ==========================================
             sfhm_out = self.sfhm_modules[i](fea[i])
+            # 第二步：DINO 生成空间注意力门控图
+            # 告诉网络：哪些地方是真正的异常，哪些地方是安全背景
+            gate = self.dino_gates[i](ds_fea_adapted[i])
 
-            enhanced_feas.append(sfhm_out)
+            # 第三步：显式相乘！(广播机制)
+            # 背景区：高频噪声 * 0(gate) ≈ 0 （噪声被完美抹除）
+            # 缺陷区：高频划痕 * 1(gate) ≈ 高频划痕 （缺陷被完美保留）
+            gated_sfhm_out = sfhm_out * gate
+            enhanced_feas.append(gated_sfhm_out)
             # 为了兼容你原有的 PFF (它期望收到两组特征去运算)
             # 我们直接把 SFHM 提纯后的特征映射回 256 维当作纯净的 ds_fea_adapted
             # 或者最简单的做法是：不用 PFF 里的 ds_fea_adapted 逻辑了，但为了少改代码，保持双路输入
@@ -380,19 +307,21 @@ class Encoder(nn.Module):
         # 这样 enhanced_feas 里的高频极度锐利，PFF 融合时会更依赖这些高频信息。
         final_fea = self.pff(enhanced_feas, ds_fea_adapted)
 
+        # 将 PFF 的输出解包为四个尺度的特征图
+        x1, x2, x3, x4 = final_fea
         # fea = self.pff(fea, ds_fea_adapted)
+        # 【SRF 关键点 2】：执行边界锐化
+        # =========================================================
+        # A. 用浅层特征生成高清边界掩码 (Shape: [B, 1, H, W])
+        edge_mask = self.srf_mask_gen(highest_res_detail)
+        # B. 残差相乘锐化。
+        # 原理：在边缘掩码强烈(趋近于1)的地方，深层特征 x1 的激活值翻倍；
+        # 在没有物理边缘的平坦区(趋近于0)，x1 保持原样 (x1 * 1.0)。
+        x1_sharpened = x1 * (1.0 + edge_mask)
 
-        '''# 计算 SFD (Semantic Frequency Differential)
-        diff_maps = []
-        for i in range(4):
-            # 输入: FPN特征 (包含丰富细节), Adapter特征 (包含语义)
-            # 输出: 差分图 (高频缺陷)
-            d_map = self.sfd_modules[i](fea[i], ds_fea_adapted[i])
-            diff_maps.append(d_map)'''
+        return x1_sharpened, x2, x3, x4
+        # return final_fea
 
-        # return fea, ds_fea, ds_fea_adapted
-        return final_fea
-        # return diff_maps
 
 class FuseGated(nn.Module):
     def __init__(self, dim):
