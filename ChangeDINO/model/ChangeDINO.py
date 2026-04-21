@@ -307,7 +307,7 @@ class Encoder(nn.Module):
         # 这样 enhanced_feas 里的高频极度锐利，PFF 融合时会更依赖这些高频信息。
         final_fea = self.pff(enhanced_feas, ds_fea_adapted)
 
-        # 将 PFF 的输出解包为四个尺度的特征图
+        '''# 将 PFF 的输出解包为四个尺度的特征图
         x1, x2, x3, x4 = final_fea
         # fea = self.pff(fea, ds_fea_adapted)
         # 【SRF 关键点 2】：执行边界锐化
@@ -317,10 +317,10 @@ class Encoder(nn.Module):
         # B. 残差相乘锐化。
         # 原理：在边缘掩码强烈(趋近于1)的地方，深层特征 x1 的激活值翻倍；
         # 在没有物理边缘的平坦区(趋近于0)，x1 保持原样 (x1 * 1.0)。
-        x1_sharpened = x1 * (1.0 + edge_mask)
+        x1_sharpened = x1 * (1.0 + edge_mask)'''
 
-        return x1_sharpened, x2, x3, x4
-        # return final_fea
+        # return x1_sharpened, x2, x3, x4
+        return final_fea
 
 
 class FuseGated(nn.Module):
@@ -428,29 +428,24 @@ class Detector(nn.Module):
         # 1. 解包特征金字塔（单输入，没有差异计算
         fea_p2, fea_p3, fea_p4, fea_p5 = xs
 
-        '''diff_p2 = torch.abs(t1_p2 - t2_p2)
-           diff_p3 = torch.abs(t1_p3 - t2_p3)
-           diff_p4 = torch.abs(t1_p4 - t2_p4)
-           diff_p5 = torch.abs(t1_p5 - t2_p5)'''
-
         # 2. 自顶向下处理（与原来类似，但没有diff计算）
         # 从最深层的p5开始
-        fea_p5 = self.tb5(fea_p5)
+        # fea_p5 = self.tb5(fea_p5)
         pred_p5 = self.p5_head(fea_p5)
 
         # p5特征融合到p4
         fea_p4 = self.p5_to_p4(fea_p5, fea_p4)
-        fea_p4 = self.tb4(fea_p4)
+        # fea_p4 = self.tb4(fea_p4)
         pred_p4 = self.p4_head(fea_p4)
 
         # p4特征融合到p3
         fea_p3 = self.p4_to_p3(fea_p4, fea_p3)
-        fea_p3 = self.tb3(fea_p3)
+        # fea_p3 = self.tb3(fea_p3)
         pred_p3 = self.p3_head(fea_p3)
 
         # p3特征融合到p2
         fea_p2 = self.p3_to_p2(fea_p3, fea_p2)
-        fea_p2 = self.tb2(fea_p2)
+        # fea_p2 = self.tb2(fea_p2)
         pred_p2 = self.p2_head(fea_p2)
 
         # 3. 上采样到统一尺寸
