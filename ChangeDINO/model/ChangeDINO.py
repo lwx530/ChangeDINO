@@ -307,7 +307,7 @@ class Encoder(nn.Module):
         # 这样 enhanced_feas 里的高频极度锐利，PFF 融合时会更依赖这些高频信息。
         final_fea = self.pff(enhanced_feas, ds_fea_adapted)
 
-        '''# 将 PFF 的输出解包为四个尺度的特征图
+        # 将 PFF 的输出解包为四个尺度的特征图
         x1, x2, x3, x4 = final_fea
         # fea = self.pff(fea, ds_fea_adapted)
         # 【SRF 关键点 2】：执行边界锐化
@@ -317,10 +317,10 @@ class Encoder(nn.Module):
         # B. 残差相乘锐化。
         # 原理：在边缘掩码强烈(趋近于1)的地方，深层特征 x1 的激活值翻倍；
         # 在没有物理边缘的平坦区(趋近于0)，x1 保持原样 (x1 * 1.0)。
-        x1_sharpened = x1 * (1.0 + edge_mask)'''
+        x1_sharpened = x1 * (1.0 + edge_mask)
 
-        # return x1_sharpened, x2, x3, x4
-        return final_fea
+        return x1_sharpened, x2, x3, x4
+        # return final_fea
 
 
 class FuseGated(nn.Module):

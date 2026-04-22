@@ -19,7 +19,7 @@ class LearnableSoftMorph(nn.Module):
         self.we_close_erode  = make_kernel(k_close)
 
         # after sigomid: α ∈ [0,1]
-        self.alpha_raw = nn.Parameter(torch.tensor(-5.0))  
+        self.alpha_raw = nn.Parameter(torch.tensor(-5.0))
 
     @staticmethod
     def _logsumexp_pool(x_cols, w, tau):

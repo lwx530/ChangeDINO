@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from PIL import Image
 import torchvision.transforms as transforms
 import os
@@ -9,40 +10,34 @@ import numpy as np
 from model.ChangeDINO import ChangeModel
 
 
-def save_feature_map(feature_tensor, save_name, save_dir="vis_results_cda-3_11"):
+def save_logit_map(logit_tensor, save_name, save_dir="vis_results_lmm-3_11"):
     """
-    使用 RGB-PCA 提取 DINOv3 丰富语义特征并保存为彩色图
+    针对 LMM 模块的 2 通道 Logits 进行可视化。
+    将其转换为前景（缺陷）的概率分布热力图。
     """
     os.makedirs(save_dir, exist_ok=True)
-    if feature_tensor.dim() == 4:
-        feat = feature_tensor[0]  # [C, H, W]
-    else:
-        feat = feature_tensor
 
-    C, H, W = feat.shape
+    # 确保张量在 CPU 上并转为全精度
+    logit_tensor = logit_tensor.float().detach().cpu()
 
-    # 1. 展平并去中心化
-    feat_flat = feat.view(C, -1).permute(1, 0)
-    feat_flat = feat_flat - feat_flat.mean(dim=0, keepdim=True)
+    # 将 Logits 转换为概率 (经过 Softmax)
+    # 形状从 [B, 2, H, W] 变成 [B, 2, H, W]
+    prob_tensor = F.softmax(logit_tensor, dim=1)
 
-    # 2. 提取前 3 个主成分 (PC1, PC2, PC3)
-    U, S, V = torch.pca_lowrank(feat_flat, q=3)
-    feat_pca = torch.matmul(feat_flat, V[:, :3]) # [H*W, 3]
-    feat_pca = feat_pca.view(H, W, 3).detach().cpu().numpy()
+    # 取出 batch=0, channel=1（假设 channel 1 是前景/缺陷类）的概率图
+    # 如果你的缺陷类是 channel 0，请改成 prob_tensor[0, 0]
+    prob_map = prob_tensor[0, 1].numpy()
 
-    # 3. 分别将三个通道归一化到 0-1 区间，映射为 RGB
-    for i in range(3):
-        comp = feat_pca[:, :, i]
-        comp_min, comp_max = comp.min(), comp.max()
-        feat_pca[:, :, i] = (comp - comp_min) / (comp_max - comp_min + 1e-8)
-
-    # 4. 画图并保存
+    # 画图并保存热力图
     plt.figure(figsize=(6, 6))
-    plt.imshow(feat_pca)  # 直接显示 RGB 彩色图
+    # cmap='jet' 会生成经典的红蓝热力图（红色代表概率高，蓝色代表概率低）
+    plt.imshow(prob_map, cmap='jet', vmin=0, vmax=1.0)
+    plt.colorbar(fraction=0.046, pad=0.04)  # 增加颜色条以方便对比数值
     plt.axis('off')
-    plt.title(save_name + "_RGB")
-    plt.savefig(os.path.join(save_dir, f"{save_name}_rgb.png"), bbox_inches='tight')
+    plt.title(save_name)
+    plt.savefig(os.path.join(save_dir, f"{save_name}.png"), bbox_inches='tight', dpi=150)
     plt.close()
+
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -51,11 +46,10 @@ def main():
     model = ChangeModel(backbone="mobilenetv2").to(device)
 
     print("2. 正在加载训练好的权重...")
-    weight_path = "/home/linweixuan/ChangeDINO/checkpoints/ESDI-8/ESDI-8_mobilenetv2_best.pth"
+    weight_path = "/home/linweixuan/ChangeDINO/checkpoints/ESDI-9/ESDI-9_mobilenetv2_best.pth"
 
     if os.path.exists(weight_path):
         checkpoint = torch.load(weight_path, map_location=device)
-        # 【Bug 修复】：你的 create_ChangeDINO.py 中保存的 key 是 'network'，不是 'model_state_dict'！
         if 'network' in checkpoint:
             state_dict = checkpoint['network']
         elif 'model_state_dict' in checkpoint:
@@ -70,18 +64,18 @@ def main():
 
     model.eval()
 
-    print("3. 正在注册 CDA 模块特征提取 Hook...")
-    cda_features = {}
+    print("3. 正在注册 LMM 模块特征提取 Hook...")
+    lmm_features = {}
 
-    # 【修改点 1 & 3】：新的 hook 函数，同时截获输入和输出
-    def hook_fn_cda(module, input, output):
-        # input 是一个元组，input[0] 就是进入 tb2 (CDA) 之前的特征
-        cda_features['1_Before_CDA'] = input[0]
-        # output 是经过 tb2 (CDA) 处理后的特征
-        cda_features['2_After_CDA'] = output
+    # 截获进入 LMM 前的 Logits 和 经过 LMM 后的 Logits
+    def hook_fn_lmm(module, input, output):
+        # input[0] 是预测头 (detector) 刚出来的原始 logits
+        lmm_features['1_Before_LMM'] = input[0]
+        # output 是经过可学习形态学模块 (Soft Erosion/Dilation) 提纯后的 logits
+        lmm_features['2_After_LMM'] = output
 
-    # 将钩子挂载到模型内部的 dino 模块上
-    hook_handle = model.detector.tb2.register_forward_hook(hook_fn_cda)
+    # 【关键修改】：将钩子挂载到 LMM 模块 (self.refiner) 上
+    hook_handle = model.refiner.register_forward_hook(hook_fn_lmm)
 
     print("4. 正在读取并预处理图片...")
     img_path = "/home/linweixuan/ChangeDINO/datasets/ESDIs-SOD/test/images/3_11.jpg"
@@ -100,14 +94,18 @@ def main():
 
     print("5. 正在进行前向推理...")
     with torch.no_grad():
+        # 【暴力解封测试】：强行把 alpha_raw 改成正数，让 sigmoid(alpha_raw) 逼近 1.0
+        # 这样模型的输出将 100% 采用 LMM 处理后的结果！
+        print(f"   -> 篡改前 Alpha: {model.refiner.alpha_raw.sigmoid().item():.6f}")
+        model.refiner.alpha_raw.data = torch.tensor(5.0).to(device)
+        print(f"   -> 篡改后 Alpha: {model.refiner.alpha_raw.sigmoid().item():.6f}")
         model._forward(input_tensor)
 
-    print("6. 正在绘制特征热力图...")
-    # 推理完成后，dino_features 字典里已经装满了我们要的特征
-    save_dir = "vis_results_cda-3_11"
-    for layer_name, feat_tensor in cda_features.items():
-        print(f"   -> 保存 {layer_name} 特征图...")
-        save_feature_map(feat_tensor, f"{layer_name}", save_dir=save_dir)
+    print("6. 正在绘制 LMM 前后热力图...")
+    save_dir = "vis_results_lmm-3_11"
+    for layer_name, feat_tensor in lmm_features.items():
+        print(f"   -> 保存 {layer_name} 概率图...")
+        save_logit_map(feat_tensor, f"{layer_name}", save_dir=save_dir)
 
     # 用完后拆除钩子
     hook_handle.remove()
