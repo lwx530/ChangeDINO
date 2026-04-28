@@ -499,7 +499,7 @@ class TransformerBlock(nn.Module):
         self.spatial_ffn = FeedForward(dim, ffn_expansion_factor*dim)
 
     def forward(self, x):
-        x = x + self.spatial_attn(self.norm1(x))
+        # x = x + self.spatial_attn(self.norm1(x))
         x = x + self.spatial_ffn(self.norm2(x))
         x = x + self.channel_attn(self.norm3(x))
         x = x + self.channel_ffn(self.norm4(x))

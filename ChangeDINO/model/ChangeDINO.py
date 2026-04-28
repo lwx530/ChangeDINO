@@ -430,22 +430,22 @@ class Detector(nn.Module):
 
         # 2. 自顶向下处理（与原来类似，但没有diff计算）
         # 从最深层的p5开始
-        # fea_p5 = self.tb5(fea_p5)
+        fea_p5 = self.tb5(fea_p5)
         pred_p5 = self.p5_head(fea_p5)
 
         # p5特征融合到p4
         fea_p4 = self.p5_to_p4(fea_p5, fea_p4)
-        # fea_p4 = self.tb4(fea_p4)
+        fea_p4 = self.tb4(fea_p4)
         pred_p4 = self.p4_head(fea_p4)
 
         # p4特征融合到p3
         fea_p3 = self.p4_to_p3(fea_p4, fea_p3)
-        # fea_p3 = self.tb3(fea_p3)
+        fea_p3 = self.tb3(fea_p3)
         pred_p3 = self.p3_head(fea_p3)
 
         # p3特征融合到p2
         fea_p2 = self.p3_to_p2(fea_p3, fea_p2)
-        # fea_p2 = self.tb2(fea_p2)
+        fea_p2 = self.tb2(fea_p2)
         pred_p2 = self.p2_head(fea_p2)
 
         # 3. 上采样到统一尺寸
