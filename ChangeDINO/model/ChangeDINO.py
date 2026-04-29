@@ -307,20 +307,25 @@ class Encoder(nn.Module):
         # 这样 enhanced_feas 里的高频极度锐利，PFF 融合时会更依赖这些高频信息。
         final_fea = self.pff(enhanced_feas, ds_fea_adapted)
 
-        '''# 将 PFF 的输出解包为四个尺度的特征图
+        # 将 PFF 的输出解包为四个尺度的特征图
         x1, x2, x3, x4 = final_fea
         # fea = self.pff(fea, ds_fea_adapted)
         # 【SRF 关键点 2】：执行边界锐化
         # =========================================================
         # A. 用浅层特征生成高清边界掩码 (Shape: [B, 1, H, W])
         edge_mask = self.srf_mask_gen(highest_res_detail)
-        # B. 残差相乘锐化。
-        # 原理：在边缘掩码强烈(趋近于1)的地方，深层特征 x1 的激活值翻倍；
-        # 在没有物理边缘的平坦区(趋近于0)，x1 保持原样 (x1 * 1.0)。
-        x1_sharpened = x1 * (1.0 + edge_mask)'''
+        # 2. 【核心修改】复用你在 SFHM 中写好的 DINO 语义门控，过滤背景！
+        # 这个门控图在缺陷处接近 1，在背景处接近 0
+        semantic_gate = F.interpolate(self.dino_gates[0](ds_fea_adapted[0]),
+                                      size=edge_mask.shape[-2:],
+                                      mode="bilinear", align_corners=False)
+        clean_edge_mask = edge_mask * semantic_gate
 
-        # return x1_sharpened, x2, x3, x4
-        return final_fea
+        # 3. 仅在干净的掩码区域执行特征锐化
+        x1_sharpened = x1 * (1.0 + clean_edge_mask)
+
+        return x1_sharpened, x2, x3, x4
+        # return final_fea
 
 
 class FuseGated(nn.Module):
