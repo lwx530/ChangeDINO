@@ -15,32 +15,39 @@ from .blocks.sfhm import SFHM
 from .backbone.mobilenetv2 import mobilenet_v2
 
 
-class InNetworkAdapterWrapper(nn.Module):
-    def __init__(self, original_block, dim=1024, bottleneck_dim=256):
+class SobelEdgeExtractor(nn.Module):
+    """
+    基于 ARNet 思想的纯物理边缘提取器 (Sobel Operator)
+    作用：计算特征图的水平和垂直梯度，强行滤除平坦的背景，只保留像素突变的物理边缘。
+    """
+
+    def __init__(self, in_channels):
         super().__init__()
-        # 1. 挂载原始的 DINOv3 Block (冻结状态)
-        self.original_block = original_block
+        # 1. 定义固定的 3x3 Sobel 矩阵
+        sobel_x = torch.tensor([[-1., 0., 1.],
+                                [-2., 0., 2.],
+                                [-1., 0., 1.]], dtype=torch.float32)
+        sobel_y = torch.tensor([[1., 2., 1.],
+                                [0., 0., 0.],
+                                [-1., -2., -1.]], dtype=torch.float32)
 
-        # 2. 瓶颈结构的线性 Adapter (1024 -> 256 -> 1024)
-        self.down = nn.Linear(dim, bottleneck_dim)
-        self.act = nn.GELU()
-        self.up = nn.Linear(bottleneck_dim, dim)
+        # 2. 调整形状以适应 PyTorch 分组卷积: [out_channels, 1, kH, kW]
+        sobel_x = sobel_x.view(1, 1, 3, 3).repeat(in_channels, 1, 1, 1)
+        sobel_y = sobel_y.view(1, 1, 3, 3).repeat(in_channels, 1, 1, 1)
 
-        # 3. 核心：零初始化，确保初始状态等价于原生 DINOv3
-        nn.init.zeros_(self.up.weight)
-        nn.init.zeros_(self.up.bias)
+        # 3. 注册为 buffer，表示它是不可学习的固定参数，不参与梯度更新
+        self.register_buffer('weight_x', sobel_x)
+        self.register_buffer('weight_y', sobel_y)
 
-    def forward(self, x, *args, **kwargs):
-        # 第一步：数据正常穿过原始的 DINOv3 层。
-        # 必须带上 *args, **kwargs，因为 DINOv3 会传入 rope_sincos 等位置编码参数
-        out = self.original_block(x, *args, **kwargs)
+    def forward(self, x):
+        # 4. 采用深度可分离卷积 (groups=x.shape[1])，对每个特征通道独立计算空间梯度
+        grad_x = F.conv2d(x, self.weight_x, padding=1, groups=x.shape[1])
+        grad_y = F.conv2d(x, self.weight_y, padding=1, groups=x.shape[1])
 
-        # 第二步：将输出特征送入 Adapter 进行特异性加工
-        adapter_out = self.up(self.act(self.down(out)))
+        # 5. 勾股定理融合绝对强度，加上 1e-6 防止出现 sqrt(0) 导致梯度爆炸或 NaN
+        edge_magnitude = torch.sqrt(grad_x ** 2 + grad_y ** 2 + 1e-6)
 
-        # 第三步：残差融合并返回。
-        # 这个返回值会顺着 DINOv3 的源码，作为输入直接流向下一层 (比如从第5层流向第6层)！
-        return out + adapter_out
+        return edge_magnitude
 
 class SRFMaskGenerator(nn.Module):
     """
@@ -89,22 +96,6 @@ class PyramidFeatureFusion(nn.Module):
         self.dense_dim = dense_dim
         self.hidden_dim = hidden_dim
         self.patch_size = patch_size
-
-        '''# 定义一个简单的纯卷积融合块
-        def make_fusion_block(in_channels, out_channels):
-            return nn.Sequential(
-                # 第一步：你的原有的深度可分离卷积/特征降维块
-                DsBnRelu(in_channels, out_channels),
-                # 第二步：纯卷积块（替代了原来的 CBAM）
-                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-                nn.BatchNorm2d(out_channels),
-                nn.ReLU(inplace=True)
-            )
-
-        self.c4 = make_fusion_block(in_dims[3] + hidden_dim, in_dims[3])
-        self.c3 = make_fusion_block(in_dims[2] + hidden_dim, in_dims[2])
-        self.c2 = make_fusion_block(in_dims[1] + hidden_dim, in_dims[1])
-        self.c1 = make_fusion_block(in_dims[0] + hidden_dim, in_dims[0])'''
 
         self.c4 = nn.Sequential(
             DsBnRelu(in_dims[3] + hidden_dim, in_dims[3]), CBAM(in_dims[3], 8)
@@ -181,22 +172,6 @@ class Encoder(nn.Module):
             sizes=(64, 32, 16, 8)
         )
 
-        '''# ==================== 新增：内嵌式 Adapter 动态注入 ====================
-        # 目标层级：在第 5, 11, 17, 23 层的 Block 外面套上我们的 Wrapper
-        target_layers = [5, 11, 17, 23]
-
-        # ⚠️ 注意：这里的 `self.dino` 是你在 adapter.py 写的 DINOV3Wrapper 类。
-        # 你需要根据 DINOV3Wrapper 内部定义真实 DINO 模型的变量名，来找到 `blocks`。
-        # 假设真实模型在 wrapper 里叫做 `self.model`，那么路径就是 `self.dino.model.blocks`。
-        # 如果报错找不到 blocks，请查看 adapter.py 里你的实例化名称（也可能是 self.dino.dino.blocks 等）。
-
-        for idx in target_layers:
-            original_block = self.dino.model.blocks[idx]  # 提取原 Block
-            self.dino.model.blocks[idx] = InNetworkAdapterWrapper(
-                original_block, dim=1024, bottleneck_dim=256
-            )  # 偷梁换柱
-        # ===================================================================='''
-
         self.pff = PyramidFeatureFusion(
             in_dims=[fpn_channels] * 4,
             dense_dim=1024,
@@ -204,9 +179,9 @@ class Encoder(nn.Module):
             hidden_dim=dense_out_dim,
         )
 
-        # 【新增】实例化 SRF 掩码生成器
-        # 我们将接收 FPN 输出的最高分辨率层 (通道数为 fpn_channels)
-        # =========================================================
+        # 【修改点 1】: 增加 Sobel 边缘提取器
+        self.sobel_extractor = SobelEdgeExtractor(in_channels=fpn_channels)
+
         self.srf_mask_gen = SRFMaskGenerator(in_channels=fpn_channels)
 
         # ==================== 新增：SFHM 前置处理模块 ====================
@@ -254,7 +229,6 @@ class Encoder(nn.Module):
 
         raw_ds_fea = self.dino(x)  # 获取24层
 
-        # ==================== 更新：24层全特征分组聚合逻辑 ====================
         # 将 24 层特征等分为 4 组，每组 6 层。
         # 采用求平均 (mean) 的方式，保证特征的量级稳定
         ds_fea = []
@@ -276,44 +250,21 @@ class Encoder(nn.Module):
         enhanced_feas = []
 
         for i in range(4):
-            # 将对应尺度的 CNN 特征和 DINO 特征拼接: 128 + 256 = 384
-            # fused = torch.cat([fea[i], ds_fea_adapted[i]], dim=1)
-
-            # 降维到 128
-            # fused = self.fusion_projs[i](fused)
-
-            # ==========================================
-            # 核心：通过 SFHM 模块进行 2D-FFT 频域强化和空域提纯
-            # 这里会自动放大高频缺陷（划痕/裂纹），抑制低频背景
-            # ==========================================
             sfhm_out = self.sfhm_modules[i](fea[i])
-            # 第二步：DINO 生成空间注意力门控图
-            # 告诉网络：哪些地方是真正的异常，哪些地方是安全背景
             gate = self.dino_gates[i](ds_fea_adapted[i])
-
-            # 第三步：显式相乘！(广播机制)
-            # 背景区：高频噪声 * 0(gate) ≈ 0 （噪声被完美抹除）
-            # 缺陷区：高频划痕 * 1(gate) ≈ 高频划痕 （缺陷被完美保留）
             gated_sfhm_out = sfhm_out * gate
             enhanced_feas.append(gated_sfhm_out)
-            # 为了兼容你原有的 PFF (它期望收到两组特征去运算)
-            # 我们直接把 SFHM 提纯后的特征映射回 256 维当作纯净的 ds_fea_adapted
-            # 或者最简单的做法是：不用 PFF 里的 ds_fea_adapted 逻辑了，但为了少改代码，保持双路输入
-        # ===============================================================
 
-        # 4. 把经过 SFHM 极致强化的特征，送入你原有的 PFF 做最终金字塔融合
-        # 注意：因为你的 PFF 是把 fea 和 ds_fea 再次拼接处理，
-        # 为了不破坏你的原网络拓扑，fea 传入增强后的，ds_fea 依然传入原本的。
-        # 这样 enhanced_feas 里的高频极度锐利，PFF 融合时会更依赖这些高频信息。
         final_fea = self.pff(enhanced_feas, ds_fea_adapted)
 
         # 将 PFF 的输出解包为四个尺度的特征图
         x1, x2, x3, x4 = final_fea
-        # fea = self.pff(fea, ds_fea_adapted)
         # 【SRF 关键点 2】：执行边界锐化
         # =========================================================
+        pure_edge_feat = self.sobel_extractor(highest_res_detail)
+        enhanced_detail = highest_res_detail + pure_edge_feat
         # A. 用浅层特征生成高清边界掩码 (Shape: [B, 1, H, W])
-        edge_mask = self.srf_mask_gen(highest_res_detail)
+        edge_mask = self.srf_mask_gen(enhanced_detail)
         # 2. 【核心修改】复用你在 SFHM 中写好的 DINO 语义门控，过滤背景！
         # 这个门控图在缺陷处接近 1，在背景处接近 0
         semantic_gate = F.interpolate(self.dino_gates[0](ds_fea_adapted[0]),
@@ -365,7 +316,6 @@ class Detector(nn.Module):
         self.p4_to_p3 = FuseGated(fpn_channels)
         self.p3_to_p2 = FuseGated(fpn_channels)
 
-        # 修改Transformer注意力机制：CDA → 普通自注意力
         self.tb5 = nn.Sequential(
             *[TransformerBlock(
                 dim=fpn_channels,
@@ -481,18 +431,14 @@ class ChangeModel(nn.Module):
     def _forward(self, x):
         # for inference
         fea = self.encoder(x)
-        # fea, dino_feats, adapter_feats = self.encoder(x)      # 将DINOv3提取的特征图和经过adapter处理的特征图可视化
         pred, _, _, _ = self.detector(fea)
         pred = self.refiner(pred)
-        # return pred, dino_feats, adapter_feats      # 这个在测试时要用到可视化的时候用
         return pred                   # 训练的时候用这个
 
     def forward(self, x):
         # for training
         ## change detection
         fea = self.encoder(x)
-        # fea, dino_feats, adapter_feats = self.encoder(x)      # 将DINOv3提取的特征图和经过adapter处理的特征图可视化
-        # fea2 = self.encoder(x2)
 
         preds = self.detector(fea)
         final_pred = self.refiner(preds[0])
