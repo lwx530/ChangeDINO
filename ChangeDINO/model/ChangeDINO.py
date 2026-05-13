@@ -8,7 +8,7 @@ import numpy as np
 
 from .blocks.fpn import FPN, DsBnRelu
 from .blocks.cbam import CBAM
-from .blocks.adapter import DINOV3Wrapper, DenseAdapterLite, LinearAdapter
+from .blocks.adapter import DINOV3Wrapper, DenseAdapterLite, LinearAdapter, FidelityAwareAdapter
 from .blocks.diffatts import TransformerBlock
 from .blocks.refine import LearnableSoftMorph
 from .blocks.sfhm import SFHM
@@ -132,10 +132,17 @@ class Encoder(nn.Module):
             in_dim=1024, out_dim=dense_out_dim, bottleneck=fpn_channels // 2,
         )
 
-        self.defect_adapter = LinearAdapter(
+        '''self.defect_adapter = LinearAdapter(
             in_dim=1024,
             out_dim=dense_out_dim,  # 即 256
             sizes=(64, 32, 16, 8)
+        )'''
+
+        self.defect_adapter = FidelityAwareAdapter(
+            in_dim=1024,
+            out_dim=dense_out_dim,
+            sizes=(64, 32, 16, 8),
+            rank=256  # 设定中间调制空间的维度，256 是个很好的平衡点
         )
 
         self.pff = PyramidFeatureFusion(

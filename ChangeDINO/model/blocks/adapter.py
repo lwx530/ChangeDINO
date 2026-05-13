@@ -14,57 +14,6 @@ MODEL_TO_NUM_LAYERS = {
     "VIT7B": 40,
 }
 
-# 从DiveSeg复制的组件
-'''class StyleInjection(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.proj_a = nn.Linear(dim, dim)
-        self.atten = nn.MultiheadAttention(embed_dim=dim, num_heads=1, batch_first=True)
-
-    def forward(self, x, a):
-        cls = x[:, :1, :]  # extract CLS token
-        x = x[:, 1:, :]
-        a_proj = self.proj_a(a)  # (bs, 1, dim)
-        x, _ = self.atten(x, a_proj, a_proj)
-        return torch.cat([cls, x], dim=1), a_proj  # restore CLS; return projected style token
-
-class Adapter(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.proj_1 = nn.Linear(dim, dim)
-        self.active = nn.GELU()
-        self.proj_2 = nn.Linear(dim, dim)
-
-    def forward(self, x):
-        cls = x[:, :1, :]  # extract CLS token
-        x = x[:, 1:, :]
-        x = self.proj_1(x)  # (bs, n, dim)
-        x = self.active(x)
-        x = self.proj_2(x)
-        return torch.cat([cls, x], dim=1)  # restore CLS to the front
-
-class StyleExtractor(nn.Module):
-    def __init__(self, em_dim=1024):
-        super().__init__()
-        self.conv1 = nn.Conv2d(3, em_dim, kernel_size=3, stride=2, padding=1)
-        self.conv2 = nn.Conv2d(em_dim, em_dim, kernel_size=3, stride=1, padding=1)
-        self.conv3 = nn.Conv2d(em_dim, em_dim, kernel_size=1, stride=1)
-        self.relu = nn.ReLU(inplace=True)
-        self.avgpool = nn.AdaptiveAvgPool2d(1)
-
-    def forward(self, images_a):
-        x = self.conv1(images_a)
-        x = self.relu(x)
-        x = self.conv2(x)
-        x = self.relu(x)
-        x = self.conv3(x)
-        x = self.relu(x)
-        x = self.avgpool(x)
-        bs, dim, _, _ = x.shape
-        x = x.view(bs, dim, -1).transpose(1, 2)
-        return x'''
-
-
 class DINOV3Wrapper(nn.Module):
     def __init__(
         self,
@@ -105,105 +54,6 @@ class DINOV3Wrapper(nn.Module):
                 for i in range(len(self.extract_ids)):
                     feats_.append(feats[self.extract_ids[i]])  # [B, N, C]
         return feats_
-
-
-'''class DINOV3Wrapper(nn.Module):
-    def __init__(
-        self,
-        # weights_path="dinov3/weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth",
-        weights_path="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
-        extract_ids=[5, 11, 17, 23],
-        device="cuda",
-        use_aquastyle=False,  # 新增参数
-    ):
-        super().__init__()
-        self.device = device
-        self.model = torch.hub.load(
-            REPO_DIR,
-            DINO_NAME,
-            source="local",
-            weights=weights_path,
-        )
-        self.model = self.model.eval().to(device)
-        self.n_layers = MODEL_TO_NUM_LAYERS[
-            re.sub(r"\d+", "", DINO_NAME.split("_")[-1]).upper()
-        ]
-        self.patch_size = int(re.findall(r"\d+", DINO_NAME.split("_")[-1])[-1])
-        self.extract_ids = extract_ids
-        self.use_aquastyle = use_aquastyle
-
-        # freeze the backbone
-        for p in self.model.parameters():
-            p.requires_grad = False
-
-        # 添加AquaStyle组件
-        if use_aquastyle:
-            self.feature_dim = self.model.embed_dim
-            self.style_extractor = StyleExtractor(em_dim=self.feature_dim)
-
-            # 为每个提取层创建组件
-            num_layers = len(extract_ids)
-            self.style_injections = nn.ModuleList([
-                StyleInjection(dim=self.feature_dim) for _ in range(num_layers)
-            ])
-            self.adapters = nn.ModuleList([
-                Adapter(dim=self.feature_dim) for _ in range(num_layers)
-            ])
-
-            # 让AquaStyle组件可训练
-            for module in [self.style_extractor] + list(self.style_injections) + list(self.adapters):
-                for p in module.parameters():
-                    p.requires_grad = True
-
-    def forward(self, x):
-        x = F.interpolate(
-            x, size=(512, 512), mode="bilinear", align_corners=True, antialias=True
-        )
-
-        # 提取风格向量
-        if self.use_aquastyle and self.training:
-            style_vec = self.style_extractor(x)
-        else:
-            style_vec = None
-
-        with torch.no_grad():
-            with torch.autocast(device_type=self.device, dtype=torch.float32):
-                feats = self.model.get_intermediate_layers(
-                    x, n=range(self.n_layers), reshape=True, norm=True
-                )
-
-                feats_ = []
-            
-                for i, layer_idx in enumerate(self.extract_ids):
-                    feat = feats[layer_idx]  # [B, N, C]
-                    # print(feat.shape)
-                    B, C, H, W = feat.size()
-                    feat_reshaped = feat.view(B, H * W, C)
-                    # print(feat_reshaped.shape)
-
-                    # 应用AquaStyle
-                    if self.use_aquastyle and style_vec is not None:
-
-                        B, N, C = feat_reshaped.shape
-                        dummy_cls = torch.zeros(B, 1, C, device=feat_reshaped.device)
-                        feat_with_cls = torch.cat([dummy_cls, feat_reshaped], dim=1)
-
-                        # StyleInjection
-                        feat_injected, _ = self.style_injections[i](feat_with_cls, style_vec)
-                        feat_injected = feat_injected[:, 1:, :]
-
-                        # Adapter
-                        feat_adapter = self.adapters[i](feat_with_cls)
-                        feat_adapter = feat_adapter[:, 1:, :]
-
-                        feat = feat_reshaped + feat_injected + feat_adapter
-
-                        B,N,C = feat.size()
-                        feat = feat.view(B,C,H,W)
-                        # print(feat.shape)
-                    feats_.append(feat)
-
-        return feats_'''
 
 
 class SepAdapterBlock(nn.Module):
@@ -316,5 +166,88 @@ class LinearAdapter(nn.Module):
                 antialias=True  # DINO特征下采样建议开启抗锯齿
             )
             outs.append(x_aligned)
+
+        return outs
+
+
+class FidelityAwareAdapter(nn.Module):
+    """
+    基于 Dino U-Net FAPM 模块思想的高保真适配器 (Fidelity-Aware Adapter)
+    核心机制: 提取共享的低秩上下文，生成空间级的 affine 参数 (gamma, beta)，
+             对各个尺度的特征进行自适应调制，防止 1024 维降维时的细节丢失。
+    """
+
+    def __init__(
+            self,
+            in_dim=1024,
+            out_dim=256,
+            sizes=(64, 32, 16, 8),
+            rank=256,  # 低秩共享空间的维度
+    ):
+        super().__init__()
+        self.sizes = list(sizes)
+        self.rank = rank
+
+        # 1. 共享上下文分支 (Shared Context Conv)
+        self.shared_conv = nn.Conv2d(in_dim, rank, kernel_size=1, bias=False)
+
+        self.specific_convs = nn.ModuleList()
+        self.modulators = nn.ModuleList()
+        self.refine_convs = nn.ModuleList()
+
+        for _ in self.sizes:
+            # 2. 尺度特定分支 (Scale-Specific Conv)
+            self.specific_convs.append(
+                nn.Conv2d(in_dim, rank, kernel_size=1, bias=False)
+            )
+
+            # 3. 调制参数生成器 (Modulator Generator)
+            # 接收 rank 维的 shared context，输出 rank*2 维的参数 (gamma 和 beta)
+            self.modulators.append(nn.Sequential(
+                nn.Conv2d(rank, rank, kernel_size=1),
+                nn.GELU(),
+                nn.Conv2d(rank, rank * 2, kernel_size=1)
+            ))
+
+            # 4. 提纯与维度映射 (Refinement Stage)
+            # 采用深度可分离卷积捕获局部细节，并映射到目标输出维度
+            self.refine_convs.append(nn.Sequential(
+                nn.Conv2d(rank, rank, kernel_size=3, padding=1, groups=rank, bias=False),  # Depthwise
+                nn.BatchNorm2d(rank),
+                nn.GELU(),
+                nn.Conv2d(rank, out_dim, kernel_size=1, bias=True)  # Pointwise
+            ))
+
+    def forward(self, feats):
+        """
+        feats: DINOV3Wrapper 输出的 4 层特征 (通常分辨率相同，皆为 1024 维)
+        """
+        outs = []
+        for i, x in enumerate(feats):
+            # A. 正交分解：提取共享上下文 (Z_ctx) 和 尺度特定特征 (Z_sp)
+            z_ctx = self.shared_conv(x)  # [B, rank, H, W]
+            z_sp = self.specific_convs[i](x)  # [B, rank, H, W]
+
+            # B. 上下文引导调制 (Feature-wise Modulation)
+            # 使用 z_ctx 生成空间感知的 gamma 和 beta
+            params = self.modulators[i](z_ctx)  # [B, rank*2, H, W]
+            gamma, beta = torch.chunk(params, 2, dim=1)  # 各自 [B, rank, H, W]
+
+            # 执行调制: Z_mod = Z_sp * (1 + gamma) + beta
+            z_mod = z_sp * (1.0 + gamma) + beta
+
+            # C. 空间对齐 (Interpolation)
+            # 先对齐到目标尺寸 (64, 32, 16, 8)
+            z_mod_aligned = F.interpolate(
+                z_mod,
+                size=(self.sizes[i], self.sizes[i]),
+                mode="bilinear",
+                align_corners=False,
+                antialias=True
+            )
+
+            # D. 局部提纯与输出 (Refinement)
+            out = self.refine_convs[i](z_mod_aligned)
+            outs.append(out)
 
         return outs
