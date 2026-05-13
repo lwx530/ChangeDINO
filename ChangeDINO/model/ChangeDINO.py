@@ -15,40 +15,6 @@ from .blocks.sfhm import SFHM
 from .backbone.mobilenetv2 import mobilenet_v2
 
 
-class SobelEdgeExtractor(nn.Module):
-    """
-    基于 ARNet 思想的纯物理边缘提取器 (Sobel Operator)
-    作用：计算特征图的水平和垂直梯度，强行滤除平坦的背景，只保留像素突变的物理边缘。
-    """
-
-    def __init__(self, in_channels):
-        super().__init__()
-        # 1. 定义固定的 3x3 Sobel 矩阵
-        sobel_x = torch.tensor([[-1., 0., 1.],
-                                [-2., 0., 2.],
-                                [-1., 0., 1.]], dtype=torch.float32)
-        sobel_y = torch.tensor([[1., 2., 1.],
-                                [0., 0., 0.],
-                                [-1., -2., -1.]], dtype=torch.float32)
-
-        # 2. 调整形状以适应 PyTorch 分组卷积: [out_channels, 1, kH, kW]
-        sobel_x = sobel_x.view(1, 1, 3, 3).repeat(in_channels, 1, 1, 1)
-        sobel_y = sobel_y.view(1, 1, 3, 3).repeat(in_channels, 1, 1, 1)
-
-        # 3. 注册为 buffer，表示它是不可学习的固定参数，不参与梯度更新
-        self.register_buffer('weight_x', sobel_x)
-        self.register_buffer('weight_y', sobel_y)
-
-    def forward(self, x):
-        # 4. 采用深度可分离卷积 (groups=x.shape[1])，对每个特征通道独立计算空间梯度
-        grad_x = F.conv2d(x, self.weight_x, padding=1, groups=x.shape[1])
-        grad_y = F.conv2d(x, self.weight_y, padding=1, groups=x.shape[1])
-
-        # 5. 勾股定理融合绝对强度，加上 1e-6 防止出现 sqrt(0) 导致梯度爆炸或 NaN
-        edge_magnitude = torch.sqrt(grad_x ** 2 + grad_y ** 2 + 1e-6)
-
-        return edge_magnitude
-
 class SRFMaskGenerator(nn.Module):
     """
     SRF (Spatial Refinement) 掩码生成器
@@ -179,9 +145,6 @@ class Encoder(nn.Module):
             hidden_dim=dense_out_dim,
         )
 
-        # 【修改点 1】: 增加 Sobel 边缘提取器
-        self.sobel_extractor = SobelEdgeExtractor(in_channels=fpn_channels)
-
         self.srf_mask_gen = SRFMaskGenerator(in_channels=fpn_channels)
 
         # ==================== 新增：SFHM 前置处理模块 ====================
@@ -211,19 +174,9 @@ class Encoder(nn.Module):
         ])
 
     def forward(self, x):
-        """
-        x1: [B, 3, H, W]
-        x2: [B, 3, H, W]
-        return: [B, 1, H, W]
-        """
 
         fea = self.backbone.forward(x)
         fea = self.fpn(fea[-4:])  # t1_p1, t1_p2, t1_p3, t1_p4
-
-        # 【SRF 关键点 1】：提取“铅笔线稿”
-        # fea[0] 是分辨率最高(例如 64x64)、未经深层语义污染的物理细节特征
-        # =========================================================
-        highest_res_detail = fea[0]
 
         # ds_fea = self.dino(x)  # [B, N, C]
 
@@ -235,13 +188,8 @@ class Encoder(nn.Module):
         for i in range(4):
             # 取出当前层的 6 个特征图
             group_feats = raw_ds_fea[i * 6: (i + 1) * 6]
-
-            # 将 6 个特征图在新的维度(dim=0)堆叠起来，然后求平均
-            # shape 变化: 6 个 [B, N, C] -> [6, B, N, C] -> mean -> [B, N, C]
             group_mean_feat = torch.mean(torch.stack(group_feats, dim=0), dim=0)
-
             ds_fea.append(group_mean_feat)
-        # ==========================================================
 
         # process dense features
         ds_fea_adapted = self.defect_adapter(ds_fea)
@@ -261,19 +209,11 @@ class Encoder(nn.Module):
         x1, x2, x3, x4 = final_fea
         # 【SRF 关键点 2】：执行边界锐化
         # =========================================================
-        pure_edge_feat = self.sobel_extractor(highest_res_detail)
-        enhanced_detail = highest_res_detail + pure_edge_feat
         # A. 用浅层特征生成高清边界掩码 (Shape: [B, 1, H, W])
-        edge_mask = self.srf_mask_gen(enhanced_detail)
-        # 2. 【核心修改】复用你在 SFHM 中写好的 DINO 语义门控，过滤背景！
-        # 这个门控图在缺陷处接近 1，在背景处接近 0
-        semantic_gate = F.interpolate(self.dino_gates[0](ds_fea_adapted[0]),
-                                      size=edge_mask.shape[-2:],
-                                      mode="bilinear", align_corners=False)
-        clean_edge_mask = edge_mask * semantic_gate
+        edge_mask = self.srf_mask_gen(x1)
 
         # 3. 仅在干净的掩码区域执行特征锐化
-        x1_sharpened = x1 * (1.0 + clean_edge_mask)
+        x1_sharpened = x1 * (1.0 + edge_mask)
 
         return x1_sharpened, x2, x3, x4
         # return final_fea
