@@ -8,12 +8,12 @@ import numpy as np
 
 from .blocks.fpn import FPN, DsBnRelu
 from .blocks.cbam import CBAM
-from .blocks.adapter import DINOV3Wrapper, DenseAdapterLite, LinearAdapter, FidelityAwareAdapter
+from .blocks.adapter import DINOV3Wrapper, DenseAdapterLite, LinearAdapter
 from .blocks.diffatts import TransformerBlock
 from .blocks.refine import LearnableSoftMorph
 from .blocks.sfhm import SFHM
 from .backbone.mobilenetv2 import mobilenet_v2
-
+from .blocks.deform_fusion import DeformableCrossAttentionFusion
 
 class SRFMaskGenerator(nn.Module):
     """
@@ -132,18 +132,23 @@ class Encoder(nn.Module):
             in_dim=1024, out_dim=dense_out_dim, bottleneck=fpn_channels // 2,
         )
 
-        '''self.defect_adapter = LinearAdapter(
+        self.defect_adapter = LinearAdapter(
             in_dim=1024,
             out_dim=dense_out_dim,  # 即 256
             sizes=(64, 32, 16, 8)
-        )'''
+        )
 
-        self.defect_adapter = FidelityAwareAdapter(
+        '''self.defect_adapter = FidelityAwareAdapter(
             in_dim=1024,
             out_dim=dense_out_dim,
             sizes=(64, 32, 16, 8),
             rank=256  # 设定中间调制空间的维度，256 是个很好的平衡点
-        )
+        )'''
+
+        self.deform_fusions = nn.ModuleList([
+            DeformableCrossAttentionFusion(query_dim=fpn_channels, value_dim=dense_out_dim)
+            for _ in range(4)
+        ])
 
         self.pff = PyramidFeatureFusion(
             in_dims=[fpn_channels] * 4,
@@ -201,19 +206,20 @@ class Encoder(nn.Module):
         # process dense features
         ds_fea_adapted = self.defect_adapter(ds_fea)
 
-        # ==================== 新增：空频混合增强逻辑 ====================
+        # ==================== 可变形交叉注意力深度融合 ====================
         enhanced_feas = []
-
         for i in range(4):
-            sfhm_out = self.sfhm_modules[i](fea[i])
-            gate = self.dino_gates[i](ds_fea_adapted[i])
-            gated_sfhm_out = sfhm_out * gate
-            enhanced_feas.append(gated_sfhm_out)
+            sfhm_out = self.sfhm_modules[i](fea[i])  # Query: CNN 空频高频特征
+            dino_val = ds_fea_adapted[i]  # Value: DINO 强语义特征
 
-        final_fea = self.pff(enhanced_feas, ds_fea_adapted)
+            # 执行极低显存消耗的局部采样子对齐
+            fused_out = self.deform_fusions[i](query_feat=sfhm_out, value_feat=dino_val)
+            enhanced_feas.append(fused_out)
+
+        # final_fea = self.pff(enhanced_feas, ds_fea_adapted)
 
         # 将 PFF 的输出解包为四个尺度的特征图
-        x1, x2, x3, x4 = final_fea
+        x1, x2, x3, x4 = enhanced_feas
         # 【SRF 关键点 2】：执行边界锐化
         # =========================================================
         # A. 用浅层特征生成高清边界掩码 (Shape: [B, 1, H, W])
