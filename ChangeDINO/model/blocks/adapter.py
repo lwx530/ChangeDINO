@@ -14,6 +14,50 @@ MODEL_TO_NUM_LAYERS = {
     "VIT7B": 40,
 }
 
+
+class LoRALinear(nn.Module):
+    def __init__(self, base_linear, r=8, alpha=1.0):
+        super().__init__()
+        self.base = base_linear
+
+        # 保持原始属性，防止 DINOv3 内部调用报错
+        self.in_features = base_linear.in_features
+        self.out_features = base_linear.out_features
+
+        # 确保原始全连接层被彻底冻结
+        for p in self.base.parameters():
+            p.requires_grad = False
+
+        self.r = r
+        self.alpha = alpha
+
+        # LoRA 的 A 和 B 矩阵
+        self.lora_A = nn.Parameter(torch.randn(r, self.in_features) * (1.0 / r))
+        self.lora_B = nn.Parameter(torch.zeros(self.out_features, r))
+
+    def forward(self, x):
+        base_out = self.base(x)
+        lora_out = (x @ self.lora_A.t()) @ self.lora_B.t()
+        # 论文标准做法：残差相加
+        return base_out + self.alpha * lora_out
+
+
+def apply_lora_to_dinov3_official(dinov3_model, r=8, alpha=1.0, verbose=False):
+    """
+    针对 torch.hub 加载的 Meta 官方 DINOv3 的 LoRA 注入函数
+    """
+    blocks = dinov3_model.blocks  # 官方 DINOv3 的 Transformer Blocks
+
+    for i, block in enumerate(blocks):
+        if verbose:
+            print(f"[LoRA] 正在将 LoRA 注入到 Block {i} 的 qkv 和 proj 层")
+
+        # 将标准的 Linear 替换为带有旁路矩阵的 LoRALinear
+        block.attn.qkv = LoRALinear(block.attn.qkv, r=r, alpha=alpha)
+        block.attn.proj = LoRALinear(block.attn.proj, r=r, alpha=alpha)
+
+    return dinov3_model
+
 class DINOV3Wrapper(nn.Module):
     def __init__(
         self,
@@ -21,6 +65,9 @@ class DINOV3Wrapper(nn.Module):
         weights_path="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
         extract_ids=[5, 11, 17, 23],
         device="cuda",
+        use_lora=True,
+        lora_r=8,
+        lora_alpha=1.0
     ):
         super().__init__()
         self.device = device
@@ -40,6 +87,9 @@ class DINOV3Wrapper(nn.Module):
         # freeze the backbone
         for p in self.model.parameters():
             p.requires_grad = False
+
+        if use_lora:
+            apply_lora_to_dinov3_official(self.model, r=lora_r, alpha=lora_alpha, verbose=False)
 
     def forward(self, x):
         x = F.interpolate(

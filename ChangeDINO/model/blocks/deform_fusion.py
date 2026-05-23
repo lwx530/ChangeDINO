@@ -4,66 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
-'''class DeformableCrossAttentionFusion(nn.Module):
-    """
-    纯 PyTorch 空间缩减交叉注意力 (完美平替 C++ Deformable 算子)
-    具备 O(N) 极低显存优势，且完美兼容 128 维(CNN)与 256 维(DINO)的高保真非对称融合。
-    """
-
-    def __init__(self, query_dim=128, value_dim=256, n_heads=4, kv_size=32):
-        super().__init__()
-        self.kv_size = kv_size  # 强制压缩 Key/Value 的空间分辨率上限，拯救显存
-
-        # 核心：在 256 维的高保真空间内进行注意力交互
-        self.attn = nn.MultiheadAttention(
-            embed_dim=value_dim,
-            num_heads=n_heads,
-            batch_first=True
-        )
-
-        # 升维投影层：将 CNN 从 128 维提拉到 256 维
-        self.q_proj = nn.Conv2d(query_dim, value_dim, kernel_size=1)
-
-        # 降维投影层：融合完毕后，压回 128 维送给后续解码器
-        self.out_proj = nn.Conv2d(value_dim, query_dim, kernel_size=1)
-        self.norm = nn.BatchNorm2d(query_dim)
-
-        nn.init.constant_(self.out_proj.weight, 0)
-        if self.out_proj.bias is not None:
-            nn.init.constant_(self.out_proj.bias, 0)
-
-    def forward(self, query_feat, value_feat):
-        B, C_q, H, W = query_feat.shape
-        # value_feat 此时是包含极高语义的 256 维特征
-
-        # 1. Query (CNN) 升维，且保持 100% 原始高分辨率，守住物理边缘！
-        q_high = self.q_proj(query_feat)
-        q = q_high.flatten(2).transpose(1, 2)  # [B, H*W, 256]
-
-        # 2. Key/Value (DINO) 空间池化 (拯救显存的绝对关键)
-        # 将 DINO 的空间分辨率强行池化到 32x32 (1024 个点)，消灭庞大的注意力矩阵
-        if value_feat.shape[-1] > self.kv_size or value_feat.shape[-2] > self.kv_size:
-            kv_feat = F.adaptive_avg_pool2d(value_feat, (self.kv_size, self.kv_size))
-        else:
-            kv_feat = value_feat
-
-        k = kv_feat.flatten(2).transpose(1, 2)  # [B, 序列长度(如1024), 256]
-        v = k
-
-        # 3. 计算注意力 (由于 K/V 被大幅缩短，矩阵极小，瞬间计算完毕且不爆显存)
-        attn_out, _ = self.attn(q, k, v)
-
-        # 4. 还原回 2D 图像格式
-        attn_out = attn_out.transpose(1, 2).reshape(B, value_feat.shape[1], H, W)
-
-        # 5. 残差连接：原始 128 维 CNN 边缘 + 降维后的 128 维精准语义
-        out = self.norm(query_feat + self.out_proj(attn_out))
-
-        return out'''
-
-
-
 class PurePyTorchDeformableAttn(nn.Module):
     """
     100% 纯 PyTorch 实现的可变形注意力机制 (基于 grid_sample)

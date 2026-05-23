@@ -38,8 +38,9 @@ class Model(nn.Module):
         self.focal = FocalLoss(alpha=opt.alpha, gamma=opt.gamma)
         self.dice = DICELoss()
 
+        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         self.optimizer = optim.AdamW(
-            self.model.parameters(), lr=opt.lr, weight_decay=opt.weight_decay
+            trainable_params, lr=opt.lr, weight_decay=opt.weight_decay
         )
         self.schedular = optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, opt.num_epochs, eta_min=1e-7
