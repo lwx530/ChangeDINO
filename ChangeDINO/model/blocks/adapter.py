@@ -192,7 +192,10 @@ class LinearAdapter(nn.Module):
         self.projs = nn.ModuleList([
             nn.Sequential(
                 nn.BatchNorm2d(in_dim),  # 官方习惯在投影前先对原始特征归一化
-                nn.Conv2d(in_dim, out_dim, kernel_size=1, bias=False)
+                nn.Conv2d(in_dim, out_dim, kernel_size=1, bias=False),
+                nn.Conv2d(out_dim, out_dim, kernel_size=3, padding=1, groups=out_dim, bias=False),
+                nn.BatchNorm2d(out_dim),
+                nn.ReLU(inplace=True)
             ) for _ in self.sizes
         ])
 

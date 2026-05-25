@@ -190,7 +190,7 @@ class Encoder(nn.Module):
             group_mean_feat = torch.mean(torch.stack(group_feats, dim=0), dim=0)
             ds_fea.append(group_mean_feat)
 
-        ds_fea_adapted = self.dense_adp(ds_fea)
+        ds_fea_adapted = self.defect_adapter(ds_fea)
 
         enhanced_feas = []
 
