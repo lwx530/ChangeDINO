@@ -65,9 +65,6 @@ class DINOV3Wrapper(nn.Module):
         weights_path="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
         extract_ids=[5, 11, 17, 23],
         device="cuda",
-        use_lora=True,
-        lora_r=8,
-        lora_alpha=1.0
     ):
         super().__init__()
         self.device = device
@@ -87,9 +84,6 @@ class DINOV3Wrapper(nn.Module):
         # freeze the backbone
         for p in self.model.parameters():
             p.requires_grad = False
-
-        if use_lora:
-            apply_lora_to_dinov3_official(self.model, r=lora_r, alpha=lora_alpha, verbose=False)
 
     def forward(self, x):
         x = F.interpolate(
@@ -192,10 +186,7 @@ class LinearAdapter(nn.Module):
         self.projs = nn.ModuleList([
             nn.Sequential(
                 nn.BatchNorm2d(in_dim),  # 官方习惯在投影前先对原始特征归一化
-                nn.Conv2d(in_dim, out_dim, kernel_size=1, bias=False),
-                nn.Conv2d(out_dim, out_dim, kernel_size=3, padding=1, groups=out_dim, bias=False),
-                nn.BatchNorm2d(out_dim),
-                nn.ReLU(inplace=True)
+                nn.Conv2d(in_dim, out_dim, kernel_size=1, bias=False)
             ) for _ in self.sizes
         ])
 

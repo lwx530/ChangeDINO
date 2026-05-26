@@ -38,12 +38,9 @@ class Model(nn.Module):
         self.focal = FocalLoss(alpha=opt.alpha, gamma=opt.gamma)
         self.dice = DICELoss()
 
-        lora_params = [p for n, p in self.model.named_parameters() if 'lora_' in n and p.requires_grad]
-        other_params = [p for n, p in self.model.named_parameters() if 'lora_' not in n and p.requires_grad]
-        self.optimizer = optim.AdamW([
-            {'params': other_params, 'lr': opt.lr},  # 保持默认学习率 (e.g., 1e-4)
-            {'params': lora_params, 'lr': opt.lr * 10.0}  # 给 LoRA 10 倍的学习率 (e.g., 1e-3)
-        ], weight_decay=opt.weight_decay)
+        self.optimizer = optim.AdamW(
+            self.model.parameters(), lr=opt.lr, weight_decay=opt.weight_decay
+        )
 
         self.schedular = optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, opt.num_epochs, eta_min=1e-7

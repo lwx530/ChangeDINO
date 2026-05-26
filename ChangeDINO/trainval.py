@@ -85,9 +85,8 @@ class Trainval(object):
                 f.write("val_metrics(json)\n")
 
     def _rescheduler(self, opt):
-        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         self.model.optimizer = optim.AdamW(
-            trainable_params, lr=opt.lr * 0.2, weight_decay=opt.weight_decay
+            self.model.model.parameters(), lr=opt.lr * 0.2, weight_decay=opt.weight_decay
         )
         self.model.schedular = optim.lr_scheduler.CosineAnnealingLR(
             self.model.optimizer, int(opt.num_epochs * 0.1), eta_min=1e-7

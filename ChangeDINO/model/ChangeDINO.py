@@ -125,7 +125,7 @@ class Encoder(nn.Module):
             beta_mode=beta_mode,
         )
         dense_out_dim = fpn_channels * 2
-        self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids,use_lora=True,lora_r=8)
+        self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids)
 
         self.dense_adp = DenseAdapterLite(
             in_dim=1024, out_dim=dense_out_dim, bottleneck=fpn_channels // 2, share=False
@@ -192,27 +192,27 @@ class Encoder(nn.Module):
 
         ds_fea_adapted = self.defect_adapter(ds_fea)
 
-        enhanced_feas = []
+        '''enhanced_feas = []
 
         for i in range(4):
             sfhm_out = self.sfhm_modules[i](fea[i])
             gate = self.dino_gates[i](ds_fea_adapted[i])
             gated_sfhm_out = sfhm_out * gate
-            enhanced_feas.append(gated_sfhm_out)
+            enhanced_feas.append(gated_sfhm_out)'''
 
-        final_fea = self.pff(enhanced_feas, ds_fea_adapted)
+        final_fea = self.pff(fea, ds_fea_adapted)
 
         # 将 PFF 的输出解包为四个尺度的特征图
-        x1, x2, x3, x4 = final_fea
+        '''x1, x2, x3, x4 = final_fea
         # 【SRF 关键点 2】：执行边界锐化
         # =========================================================
         # A. 用浅层特征生成高清边界掩码 (Shape: [B, 1, H, W])
         edge_mask = self.srf_mask_gen(x1)
 
         # 3. 仅在干净的掩码区域执行特征锐化
-        x1_sharpened = x1 * (1.0 + edge_mask)
+        x1_sharpened = x1 * (1.0 + edge_mask)'''
 
-        return x1_sharpened, x2, x3, x4
+        return final_fea
 
 
 class FuseGated(nn.Module):
