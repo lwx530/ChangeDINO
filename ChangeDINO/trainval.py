@@ -109,7 +109,7 @@ class Trainval(object):
         with open(self.log_path, "a", encoding="utf-8") as f:
             f.write(line)
 
-    def _plot_cd_result(self, x, x2, pred, target, epoch, stage):
+    '''def _plot_cd_result(self, x, x2, pred, target, epoch, stage):
         """
         可视化训练/验证结果
         x: 输入图像 [B, 3, H, W]
@@ -154,7 +154,7 @@ class Trainval(object):
         vis = np.clip(vis, a_min=0.0, a_max=1.0)
         file_name = os.path.join(self.vis_path, f"{stage}_epoch{epoch}.jpg")
         plt.imsave(file_name, vis)
-        print(f"📸 可视化保存到: {file_name}")
+        print(f"📸 可视化保存到: {file_name}")'''
 
     def train(self, epoch):
         tbar = tqdm(self.train_data, ncols=80)
@@ -199,10 +199,10 @@ class Trainval(object):
                 )
             )
 
-            if i == len(tbar) - 1:
+            '''if i == len(tbar) - 1:
                 self._plot_cd_result(
                     data["image"], None, pred, data["label"], epoch, "train"
-                )
+                )'''
         self.schedular.step()
 
         n = max(1, i + 1)
@@ -261,7 +261,7 @@ class Trainval(object):
                     self.SM.step(pred_uint8, gt_uint8, normalize=True)
                     self.WFM.step(pred_uint8, gt_uint8, normalize=True)
 
-                if i == len(tbar) - 1:
+                '''if i == len(tbar) - 1:
                     val_pred_binary = (val_pred_prob > 0.5).long()
                     self._plot_cd_result(
                         _data["image"],
@@ -270,7 +270,7 @@ class Trainval(object):
                         val_target_vis,
                         epoch,
                         "val",
-                    )
+                    )'''
             M_result = self.M.get_results()
             EM_result = self.EM.get_results()
             FM_result = self.FM.get_results()

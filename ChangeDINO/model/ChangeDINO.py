@@ -361,7 +361,7 @@ class ChangeModel(nn.Module):
         super().__init__()
         self.encoder = Encoder(backbone=backbone, fpn_channels=fpn_channels, **kwargs)
         self.detector = Detector(fpn_channels=fpn_channels, n_layers=n_layers, **kwargs)
-        self.refiner = LearnableSoftMorph(3, 5)
+        self.refiner = LearnableSoftMorph(1, 9)
 
     @torch.inference_mode()
     def _forward(self, x):

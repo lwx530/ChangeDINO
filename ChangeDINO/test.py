@@ -21,10 +21,6 @@ if __name__ == "__main__":
     opt.load_pretrain = True
     model = create_model(opt)
 
-    # 2. 创建可视化保存目录（关键：新增，与预测结果目录区分）
-    # vis_save_dir = os.path.join(opt.checkpoint_dir, opt.name, "feature_vis")
-    # os.makedirs(vis_save_dir, exist_ok=True)
-
     tbar = tqdm(test_data, ncols=80)
     # total_iters = test_size
     # running_metric = ConfuseMatrixMeter(n_class=2)
@@ -107,24 +103,6 @@ if __name__ == "__main__":
                     pred.save(
                         os.path.join(test_save_path, _data["fname"][j])
                     )
-
-            '''# 4. 特征可视化核心逻辑（关键：新增，批量处理每个batch的每张图片）
-            for j in range(img_tensor.shape[0]):
-                # 提取单张图片的所有数据（去除batch维度）
-                img_single = img_tensor[j]  # 原图 [3,H,W]
-                dino_feats_single = [f[j] for f in dino_feats]  # DINOv3 4层特征，每个[1024,H_i,W_i]
-                adapter_feats_single = [f[j] for f in adapter_feats]  # Adapter 4层特征，每个[256,H_i,W_i]
-                img_name = os.path.splitext(_data["fname"][j])[0]  # 去除后缀，作为可视化文件名
-
-                # 调用可视化函数
-                visualize_dino_adapter(
-                    img_ori=img_single,
-                    dino_feats=dino_feats_single,
-                    adapter_feats=adapter_feats_single,
-                    save_dir=vis_save_dir,
-                    img_name=img_name,
-                    dino_sizes=[64, 32, 16, 8]  # 与Encoder中DefectAdapter的sizes完全一致
-                )'''
 
         # 获取WPFormer指标结果
         M_result = M.get_results()

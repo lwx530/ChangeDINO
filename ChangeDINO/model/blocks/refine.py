@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class LearnableSoftMorph(nn.Module):
-    def __init__(self, k_open=3, k_close=5, tau=0.05):
+    def __init__(self, k_open=1, k_close=9, tau=0.1):
         super().__init__()
         assert k_open >= 1 and k_close >= 1
         self.k_open, self.k_close = k_open, k_close
@@ -19,7 +19,7 @@ class LearnableSoftMorph(nn.Module):
         self.we_close_erode  = make_kernel(k_close)
 
         # after sigomid: α ∈ [0,1]
-        self.alpha_raw = nn.Parameter(torch.tensor(0.0))
+        self.alpha_raw = nn.Parameter(torch.tensor(1.0))
 
     @staticmethod
     def _logsumexp_pool(x_cols, w, tau):
