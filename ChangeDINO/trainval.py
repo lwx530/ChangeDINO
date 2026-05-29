@@ -60,6 +60,7 @@ class Trainval(object):
         self.WFM = WeightedFmeasure()  # Fβw, β²=1
 
         self.alpha = 0.5
+        self.beta = 0.5
 
         self.log_path = os.path.join(self.model.save_dir, "record.txt")
         self.vis_path = os.path.join(self.model.save_dir, opt.vis_path)
@@ -162,15 +163,16 @@ class Trainval(object):
         _loss = 0.0
         _focal_loss = 0.0
         _dice_loss = 0.0
+        _boundary_loss = 0.0
         last_lr = self.optimizer.param_groups[0]["lr"]
 
         for i, data in enumerate(tbar):
             self.model.model.train()
-            pred, focal, dice = self.model(
+            pred, focal, dice, boundary = self.model(
                 data["image"].cuda(), data["label"].cuda()
             )
 
-            loss = focal * self.alpha + dice
+            loss = focal * self.alpha + dice + boundary * self.beta
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
@@ -178,6 +180,7 @@ class Trainval(object):
             _loss += loss.item()
             _focal_loss += focal.item()
             _dice_loss += dice.item()
+            _boundary_loss += boundary.item()
             last_lr = self.optimizer.param_groups[0]["lr"]
             # del loss
 
@@ -186,16 +189,17 @@ class Trainval(object):
             self.writer.add_scalar('Loss/train_total', loss.item(), global_step)
             self.writer.add_scalar('Loss/train_focal', focal.item(), global_step)
             self.writer.add_scalar('Loss/train_dice', dice.item(), global_step)
+            self.writer.add_scalar('Loss/train_boundary', boundary.item(), global_step)
             self.writer.add_scalar('LearningRate', last_lr, global_step)
             # ========================================
 
             tbar.set_description(
-                "Loss: %.3f, Focal: %.3f, Dice: %.3f, LR: %.6f"
+                "Loss: %.3f, Focal: %.3f, Dice: %.3f, Bnd: %.3f"
                 % (
                     _loss / (i + 1),
                     _focal_loss / (i + 1),
                     _dice_loss / (i + 1),
-                    last_lr,
+                    _boundary_loss / (i + 1)
                 )
             )
 

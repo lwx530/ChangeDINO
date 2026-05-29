@@ -192,27 +192,27 @@ class Encoder(nn.Module):
 
         ds_fea_adapted = self.defect_adapter(ds_fea)
 
-        '''enhanced_feas = []
+        enhanced_feas = []
 
         for i in range(4):
             sfhm_out = self.sfhm_modules[i](fea[i])
             gate = self.dino_gates[i](ds_fea_adapted[i])
             gated_sfhm_out = sfhm_out * gate
-            enhanced_feas.append(gated_sfhm_out)'''
+            enhanced_feas.append(gated_sfhm_out)
 
-        final_fea = self.pff(fea, ds_fea_adapted)
+        final_fea = self.pff(enhanced_feas, ds_fea_adapted)
 
         # 将 PFF 的输出解包为四个尺度的特征图
-        '''x1, x2, x3, x4 = final_fea
+        x1, x2, x3, x4 = final_fea
         # 【SRF 关键点 2】：执行边界锐化
         # =========================================================
         # A. 用浅层特征生成高清边界掩码 (Shape: [B, 1, H, W])
         edge_mask = self.srf_mask_gen(x1)
 
         # 3. 仅在干净的掩码区域执行特征锐化
-        x1_sharpened = x1 * (1.0 + edge_mask)'''
+        x1_sharpened = x1 * (1.0 + edge_mask)
 
-        return final_fea
+        return (x1_sharpened, x2, x3, x4), edge_mask
 
 
 class FuseGated(nn.Module):
@@ -366,7 +366,7 @@ class ChangeModel(nn.Module):
     @torch.inference_mode()
     def _forward(self, x):
         # for inference
-        fea = self.encoder(x)
+        fea, edge_mask = self.encoder(x)
         pred, _, _, _ = self.detector(fea)
         pred = self.refiner(pred)
         return pred                   # 训练的时候用这个
@@ -374,8 +374,8 @@ class ChangeModel(nn.Module):
     def forward(self, x):
         # for training
         ## change detection
-        fea = self.encoder(x)
+        fea, edge_mask = self.encoder(x)
 
         preds = self.detector(fea)
         final_pred = self.refiner(preds[0])
-        return final_pred, preds  # pred, pred_p2, pred_p3, pred_p4, pred_p5
+        return final_pred, preds, edge_mask  # pred, pred_p2, pred_p3, pred_p4, pred_p5

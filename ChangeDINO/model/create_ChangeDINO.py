@@ -7,6 +7,7 @@ import os
 import torch.optim as optim
 from .loss.focal import FocalLoss
 from .loss.dice import DICELoss
+from .loss.boundary import BoundaryLoss
 
 def get_model(backbone_name="mobilenetv2", fpn_channels=128, n_layers=[1, 1, 1], **kwargs):
     model = ChangeModel(backbone_name, fpn_channels, n_layers=n_layers, **kwargs)
@@ -37,6 +38,7 @@ class Model(nn.Module):
         )
         self.focal = FocalLoss(alpha=opt.alpha, gamma=opt.gamma)
         self.dice = DICELoss()
+        self.boundary_loss = BoundaryLoss()
 
         self.optimizer = optim.AdamW(
             self.model.parameters(), lr=opt.lr, weight_decay=opt.weight_decay
@@ -52,7 +54,7 @@ class Model(nn.Module):
         print("---------- Networks initialized -------------")
 
     def forward(self, x, label):
-        final_pred, preds = self.model(x)
+        final_pred, preds, edge_mask = self.model(x)
         label = label.long()
         focal = self.focal(final_pred, label)
         dice = self.dice(final_pred, label)
@@ -60,7 +62,15 @@ class Model(nn.Module):
             focal += self.focal(preds[i], label)
             dice += 0.5 * self.dice(preds[i], label)
 
-        return final_pred, focal, dice
+        edge_mask_up = F.interpolate(
+            edge_mask,
+            size=label.shape[-2:],  # 获取 label 的 H, W
+            mode="bilinear",
+            align_corners=False
+        )
+        boundary = self.boundary_loss(edge_mask_up, label)
+
+        return final_pred, focal, dice, boundary
 
     @torch.inference_mode()
     def inference(self, x):
