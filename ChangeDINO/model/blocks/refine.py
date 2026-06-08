@@ -49,11 +49,11 @@ class LearnableSoftMorph(nn.Module):
         tau = torch.exp(self.log_tau).clamp_min(1e-4)
 
         # Open: erode -> dilate
-        p = self._soft_erode (p_fg, self.k_open,  self.we_open_erode,   tau)
-        p = self._soft_dilate(p,    self.k_open,  self.wd_open_dilate,  tau)
+        p = self._soft_erode(p_fg, self.k_open, self.we_open_erode, tau)
+        p = self._soft_dilate(p, self.k_open, self.wd_open_dilate, tau)
         # Close: dilate -> erode
-        p = self._soft_dilate(p,    self.k_close, self.wd_close_dilate, tau)
-        p = self._soft_erode (p,    self.k_close, self.we_close_erode,  tau)
+        p = self._soft_dilate(p, self.k_close, self.wd_close_dilate, tau)
+        p = self._soft_erode(p, self.k_close, self.we_close_erode, tau)
 
         fg_logit_refined = torch.logit(p.clamp(1e-6, 1-1e-6), eps=1e-6)
 

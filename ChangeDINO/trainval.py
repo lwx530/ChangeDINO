@@ -13,7 +13,7 @@ import random
 from datetime import datetime
 from util.util import make_numpy_grid, de_norm
 import matplotlib.pyplot as plt
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 
 
 def setup_seed(seed):
@@ -39,12 +39,12 @@ class Trainval(object):
         self.train_data = train_loader.load_data()
         train_size = len(train_loader)
         print("#training images = %d" % train_size)
-        opt.phase = "val"
+        self.opt.phase = "val"
         val_loader = DataLoader(opt)
         self.val_data = val_loader.load_data()
         val_size = len(val_loader)
         print("#validation images = %d" % val_size)
-        opt.phase = "train"
+        self.opt.phase = "train"
 
         self.model = create_model(opt)
         self.optimizer = self.model.optimizer
@@ -67,12 +67,12 @@ class Trainval(object):
         os.makedirs(self.vis_path, exist_ok=True)
 
         # ========== 添加TensorBoard ==========
-        self.tensorboard_dir = os.path.join(self.model.save_dir, "tensorboard")
+        '''self.tensorboard_dir = os.path.join(self.model.save_dir, "tensorboard")
         os.makedirs(self.tensorboard_dir, exist_ok=True)
         self.writer = SummaryWriter(log_dir=self.tensorboard_dir)
 
         print(f"📊 TensorBoard日志保存到: {self.tensorboard_dir}")
-        print(f"启动命令: tensorboard --logdir={self.tensorboard_dir} --port=6006")
+        print(f"启动命令: tensorboard --logdir={self.tensorboard_dir} --port=6006")'''
         # ====================================
 
         if not os.path.exists(self.log_path):
@@ -159,7 +159,7 @@ class Trainval(object):
 
     def train(self, epoch):
         tbar = tqdm(self.train_data, ncols=80)
-        opt.phase = "train"
+        self.opt.phase = "train"
         _loss = 0.0
         _focal_loss = 0.0
         _dice_loss = 0.0
@@ -185,12 +185,12 @@ class Trainval(object):
             # del loss
 
             # ========== 添加TensorBoard记录 ==========
-            global_step = epoch * len(tbar) + i
+            '''global_step = epoch * len(tbar) + i
             self.writer.add_scalar('Loss/train_total', loss.item(), global_step)
             self.writer.add_scalar('Loss/train_focal', focal.item(), global_step)
             self.writer.add_scalar('Loss/train_dice', dice.item(), global_step)
             self.writer.add_scalar('Loss/train_boundary', boundary.item(), global_step)
-            self.writer.add_scalar('LearningRate', last_lr, global_step)
+            self.writer.add_scalar('LearningRate', last_lr, global_step)'''
             # ========================================
 
             tbar.set_description(
@@ -227,7 +227,7 @@ class Trainval(object):
         self.SM = Smeasure()
         self.WFM = WeightedFmeasure()
 
-        opt.phase = "val"
+        self.opt.phase = "val"
         self.model.eval()
 
         with torch.no_grad():
@@ -290,13 +290,13 @@ class Trainval(object):
             }
 
             # ========== 添加TensorBoard记录 ==========
-            for k, v in val_scores.items():
+            '''for k, v in val_scores.items():
                 self.writer.add_scalar(f'Metrics/val_{k}', v, epoch)
 
             # 特别记录最佳IoU
             current_best = val_scores.get('wFmeasure', 0)
             if current_best >= self.previous_best:
-                self.writer.add_scalar('Metrics/best_wFmeasure', current_best, epoch)
+                self.writer.add_scalar('Metrics/best_wFmeasure', current_best, epoch)'''
             # ========================================
 
             message = "(phase: %s) " % (self.opt.phase)
@@ -331,8 +331,8 @@ if __name__ == "__main__":
             trainval._append_log_line(epoch, train_stats, val_scores)
     finally:
         # ========== 关闭TensorBoard writer ==========
-        if hasattr(trainval, 'writer'):
-            trainval.writer.close()
+        '''if hasattr(trainval, 'writer'):
+            trainval.writer.close()'''
         # ============================================
 
     print("Done!")

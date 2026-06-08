@@ -255,56 +255,34 @@ class Detector(nn.Module):
         self.tb5 = nn.Sequential(
             *[TransformerBlock(
                 dim=fpn_channels,
-                spatial_attn_type="CDA",
-                num_channel_heads=8,
-                num_spatial_heads=4,
-                depth=3,
                 ffn_expansion_factor=2,
                 bias=False,
-                LayerNorm_type="BiasFree", )
-                for _ in range(n_layers[0])]
+                LayerNorm_type="BiasFree",
+            ) for _ in range(n_layers[0])]
         )
         self.tb4 = nn.Sequential(
             *[TransformerBlock(
                 dim=fpn_channels,
-                spatial_attn_type="CDA",
-                num_channel_heads=8,
-                num_spatial_heads=4,
-                depth=3,
                 ffn_expansion_factor=2,
                 bias=False,
-                LayerNorm_type="BiasFree", )
-                for _ in range(n_layers[1])]
+                LayerNorm_type="BiasFree",
+            ) for _ in range(n_layers[1])]
         )
         self.tb3 = nn.Sequential(
             *[TransformerBlock(
                 dim=fpn_channels,
-                spatial_attn_type="OCDA",
-                window_size=8,
-                overlap_ratio=0.5,
-                num_channel_heads=8,
-                num_spatial_heads=4,
-                depth=2,
                 ffn_expansion_factor=2,
                 bias=False,
                 LayerNorm_type="BiasFree",
-            )
-                for _ in range(n_layers[2])]
+            ) for _ in range(n_layers[2])]
         )
         self.tb2 = nn.Sequential(
             *[TransformerBlock(
                 dim=fpn_channels,
-                spatial_attn_type="OCDA",
-                window_size=8,
-                overlap_ratio=0.5,
-                num_channel_heads=8,
-                num_spatial_heads=4,
-                depth=1,
                 ffn_expansion_factor=2,
                 bias=False,
                 LayerNorm_type="BiasFree",
-            )
-                for _ in range(n_layers[3])]
+            ) for _ in range(n_layers[3])]
         )
         self.p5_head = nn.Conv2d(fpn_channels, num_classes, 1)
         self.p4_head = nn.Conv2d(fpn_channels, num_classes, 1)
