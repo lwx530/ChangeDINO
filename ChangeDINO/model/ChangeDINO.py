@@ -48,6 +48,46 @@ def get_backbone(backbone_name):
     return backbone
 
 
+import torch
+import torch.nn as nn
+
+
+# 定义一个新的并行融合块
+class ParallelFusionBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, reduction_ratio=8):
+        super().__init__()
+
+        # 1. 1x1 卷积降维：只做通道维度的融合，绝对不破坏（模糊）任何空间位置的极细边缘
+        self.reduce = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+        # 2. 局部卷积分支：负责提取和融合局部空间特征 (保持你原来的 DsBnRelu)
+        self.conv_branch = DsBnRelu(out_channels, out_channels)
+
+        # 3. 全局注意力分支：直接在未被 3x3 卷积平滑的特征上寻找异常突变 (保持你原来的 CBAM)
+        self.attn_branch = CBAM(out_channels, reduction_ratio)
+
+    def forward(self, x):
+        # 先统一降维 (例如 384 -> 128)
+        x_reduced = self.reduce(x)
+
+        # ================== 并行双分支 ==================
+        # 分支1: 局部平滑与特征融合
+        out_conv = self.conv_branch(x_reduced)
+
+        # 分支2: 注意力掩码高亮异常区域
+        # 此时的 x_reduced 保留了最原始的高频突变，CBAM 能更准地抓取 MaxPool 和 AvgPool
+        out_attn = self.attn_branch(x_reduced)
+
+        # ================== 融合 ==================
+        # 残差相加：网络会自适应地结合平滑的背景和锐利的缺陷边缘
+        return out_conv + out_attn
+
+
+# 你原本的 PFF 模块，内部替换为并行块
 class PyramidFeatureFusion(nn.Module):
     def __init__(
             self,
@@ -62,18 +102,11 @@ class PyramidFeatureFusion(nn.Module):
         self.hidden_dim = hidden_dim
         self.patch_size = patch_size
 
-        self.c4 = nn.Sequential(
-            DsBnRelu(in_dims[3] + hidden_dim, in_dims[3]), CBAM(in_dims[3], 8)
-        )
-        self.c3 = nn.Sequential(
-            DsBnRelu(in_dims[2] + hidden_dim, in_dims[2]), CBAM(in_dims[2], 8)
-        )
-        self.c2 = nn.Sequential(
-            DsBnRelu(in_dims[1] + hidden_dim, in_dims[1]), CBAM(in_dims[1], 8)
-        )
-        self.c1 = nn.Sequential(
-            DsBnRelu(in_dims[0] + hidden_dim, in_dims[0]), CBAM(in_dims[0], 8)
-        )
+        # 将原来的 nn.Sequential 替换为刚才定义的 ParallelFusionBlock
+        self.c4 = ParallelFusionBlock(in_dims[3] + hidden_dim, in_dims[3])
+        self.c3 = ParallelFusionBlock(in_dims[2] + hidden_dim, in_dims[2])
+        self.c2 = ParallelFusionBlock(in_dims[1] + hidden_dim, in_dims[1])
+        self.c1 = ParallelFusionBlock(in_dims[0] + hidden_dim, in_dims[0])
 
     def forward(self, feas, ds_fea):
         # process backbone (CNN) features
@@ -81,9 +114,10 @@ class PyramidFeatureFusion(nn.Module):
             feas  # [B, 128, 64, 64], [B, 128, 32, 32], [B, 128, 16, 16], [B, 128, 8, 8]
         )
         a1, a2, a3, a4 = (
-            ds_fea # [B, 256, 64, 64], [B, 256, 32, 32], [B, 256, 16, 16], [B, 256, 8, 8]
+            ds_fea  # [B, 256, 64, 64], [B, 256, 32, 32], [B, 256, 16, 16], [B, 256, 8, 8]
         )
 
+        # 前向传播逻辑完全不需要改，依然是先拼接，然后送入融合块
         x4 = torch.cat([x4, a4], 1)
         x4 = self.c4(x4)
 
