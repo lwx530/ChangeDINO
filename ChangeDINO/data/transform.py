@@ -40,11 +40,11 @@ class Transforms(object):
 
         # 6. 随机裁剪和缩放（对image和label同时应用）
 
-        i, j, h, w = transforms.RandomResizedCrop(size=(256, 256)).get_params(
+        i, j, h, w = transforms.RandomResizedCrop(size=(384, 384)).get_params(
             img=image, scale=[0.333, 1.0], ratio=[0.75, 1.333]
         )
-        image = TF.resized_crop(image, i, j, h, w, size=(256, 256), interpolation=InterpolationMode.BILINEAR)
-        label = TF.resized_crop(label, i, j, h, w, size=(256, 256), interpolation=InterpolationMode.NEAREST)
+        image = TF.resized_crop(image, i, j, h, w, size=(384, 384), interpolation=InterpolationMode.BILINEAR)
+        label = TF.resized_crop(label, i, j, h, w, size=(384, 384), interpolation=InterpolationMode.NEAREST)
 
         return {'image': image, 'label': label}
 

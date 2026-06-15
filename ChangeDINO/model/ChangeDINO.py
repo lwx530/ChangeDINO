@@ -168,7 +168,7 @@ class Encoder(nn.Module):
         self.defect_adapter = LinearAdapter(
             in_dim=1024,
             out_dim=dense_out_dim,  # 即 256
-            sizes=(64, 32, 16, 8)
+            sizes=(96, 48, 24, 12)
         )
 
         self.pff = PyramidFeatureFusion(
@@ -353,16 +353,16 @@ class Detector(nn.Module):
 
         # 3. 上采样到统一尺寸
         pred_p2 = F.interpolate(
-            pred_p2, size=(256, 256), mode="bilinear", align_corners=False
+            pred_p2, size=(384, 384), mode="bilinear", align_corners=False
         )
         pred_p3 = F.interpolate(
-            pred_p3, size=(256, 256), mode="bilinear", align_corners=False
+            pred_p3, size=(384, 384), mode="bilinear", align_corners=False
         )
         pred_p4 = F.interpolate(
-            pred_p4, size=(256, 256), mode="bilinear", align_corners=False
+            pred_p4, size=(384, 384), mode="bilinear", align_corners=False
         )
         pred_p5 = F.interpolate(
-            pred_p5, size=(256, 256), mode="bilinear", align_corners=False
+            pred_p5, size=(384, 384), mode="bilinear", align_corners=False
         )
 
         return pred_p2, pred_p3, pred_p4, pred_p5

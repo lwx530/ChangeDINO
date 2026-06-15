@@ -177,7 +177,7 @@ class LinearAdapter(nn.Module):
             self,
             in_dim=1024,  # DINOv3 ViT-L 的输出通道数
             out_dim=256,  # 对齐到 fpn_channels * 2
-            sizes=(64, 32, 16, 8),  # 你的金字塔特征尺寸
+            sizes=(96, 48, 24, 12),  # 你的金字塔特征尺寸
     ):
         super().__init__()
         self.sizes = list(sizes)
