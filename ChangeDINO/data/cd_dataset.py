@@ -26,7 +26,7 @@ class Load_Dataset(Dataset):
         super(Load_Dataset, self).__init__()
         self.opt = opt
 
-        self.resize = transforms.Resize((384, 384))
+        self.resize = transforms.Resize((256, 256))
 
         '''self.dir1 = os.path.join(opt.dataroot, opt.dataset, opt.phase, "A")
         self.t1_paths, self.fnames = sorted(make_dataset(self.dir1))

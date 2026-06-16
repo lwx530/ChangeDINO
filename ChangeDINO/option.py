@@ -10,7 +10,7 @@ class Options:
         self.parser.add_argument(
             "--gpu_ids", type=str, default="2", help="gpu ids: e.g. 0. use -1 for CPU"
         )
-        self.parser.add_argument("--name", type=str, default="ESDI-25")
+        self.parser.add_argument("--name", type=str, default="ESDI-26")
         self.parser.add_argument(
             "--dataroot", type=str, default="/home/linweixuan/ChangeDINO/datasets"
         )
@@ -46,7 +46,7 @@ class Options:
         self.parser.add_argument("--alpha", type=float, default=0.25)
         self.parser.add_argument("--gamma", type=int, default=4, help="gamma for Focal loss")
 
-        self.parser.add_argument("--batch_size", type=int, default=16)
+        self.parser.add_argument("--batch_size", type=int, default=8)
         self.parser.add_argument("--num_epochs", type=int, default=100)
         self.parser.add_argument("--num_workers", type=int, default=4, help="#threads for loading data")
         self.parser.add_argument("--lr", type=float, default=1e-4)

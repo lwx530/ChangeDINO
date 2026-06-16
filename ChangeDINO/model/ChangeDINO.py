@@ -53,7 +53,7 @@ import torch.nn as nn
 
 
 # 定义一个新的并行融合块
-class ParallelFusionBlock(nn.Module):
+'''class ParallelFusionBlock(nn.Module):
     def __init__(self, in_channels, out_channels, reduction_ratio=8):
         super().__init__()
 
@@ -130,6 +130,56 @@ class PyramidFeatureFusion(nn.Module):
         x1 = torch.cat([x1, a1], 1)
         x1 = self.c1(x1)
 
+        return x1, x2, x3, x4'''
+
+class PyramidFeatureFusion(nn.Module):
+    def __init__(
+        self,
+        in_dims=[128, 128, 128, 128],
+        dense_dim=1024,
+        patch_size=16,
+        hidden_dim=256,
+    ):
+        super().__init__()
+        self.in_dims = in_dims
+        self.dense_dim = dense_dim
+        self.hidden_dim = hidden_dim
+        self.patch_size = patch_size
+
+        self.c4 = nn.Sequential(
+            DsBnRelu(in_dims[3] + hidden_dim, in_dims[3]), CBAM(in_dims[3], 8)
+        )
+        self.c3 = nn.Sequential(
+            DsBnRelu(in_dims[2] + hidden_dim, in_dims[2]), CBAM(in_dims[2], 8)
+        )
+        self.c2 = nn.Sequential(
+            DsBnRelu(in_dims[1] + hidden_dim, in_dims[1]), CBAM(in_dims[1], 8)
+        )
+        self.c1 = nn.Sequential(
+            DsBnRelu(in_dims[0] + hidden_dim, in_dims[0]), CBAM(in_dims[0], 8)
+        )
+
+    def forward(self, feas, ds_feas):
+        # process backbone (CNN) features
+        x1, x2, x3, x4 = (
+            feas  # [B, 128, 64, 64], [B, 128, 32, 32], [B, 128, 16, 16], [B, 128, 8, 8]
+        )
+        a1, a2, a3, a4 = (
+            ds_feas  # [B, 256, 64, 64], [B, 256, 32, 32], [B, 256, 16, 16], [B, 256, 8, 8]
+        )
+
+        x4 = torch.cat([x4, a4], 1)
+        x4 = self.c4(x4)
+
+        x3 = torch.cat([x3, a3], 1)
+        x3 = self.c3(x3)
+
+        x2 = torch.cat([x2, a2], 1)
+        x2 = self.c2(x2)
+
+        x1 = torch.cat([x1, a1], 1)
+        x1 = self.c1(x1)
+
         return x1, x2, x3, x4
 
 
@@ -168,7 +218,7 @@ class Encoder(nn.Module):
         self.defect_adapter = LinearAdapter(
             in_dim=1024,
             out_dim=dense_out_dim,  # 即 256
-            sizes=(96, 48, 24, 12)
+            sizes=(64, 32, 16, 8)
         )
 
         self.pff = PyramidFeatureFusion(
@@ -353,16 +403,16 @@ class Detector(nn.Module):
 
         # 3. 上采样到统一尺寸
         pred_p2 = F.interpolate(
-            pred_p2, size=(384, 384), mode="bilinear", align_corners=False
+            pred_p2, size=(256, 256), mode="bilinear", align_corners=False
         )
         pred_p3 = F.interpolate(
-            pred_p3, size=(384, 384), mode="bilinear", align_corners=False
+            pred_p3, size=(256, 256), mode="bilinear", align_corners=False
         )
         pred_p4 = F.interpolate(
-            pred_p4, size=(384, 384), mode="bilinear", align_corners=False
+            pred_p4, size=(256, 256), mode="bilinear", align_corners=False
         )
         pred_p5 = F.interpolate(
-            pred_p5, size=(384, 384), mode="bilinear", align_corners=False
+            pred_p5, size=(256, 256), mode="bilinear", align_corners=False
         )
 
         return pred_p2, pred_p3, pred_p4, pred_p5

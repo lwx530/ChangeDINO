@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import re
+from dinov3.utils.utils import cat_keep_shapes, uncat_with_shapes
 
 REPO_DIR = "dinov3"
 DINO_NAME = "dinov3_vitl16"
@@ -15,47 +16,84 @@ MODEL_TO_NUM_LAYERS = {
 }
 
 
-class LoRALinear(nn.Module):
-    def __init__(self, base_linear, r=8, alpha=1.0):
+class BottleneckAdapter(nn.Module):
+    """传统的 降维-激活-升维 Adapter"""
+
+    def __init__(self, in_dim, bottleneck_dim):
         super().__init__()
-        self.base = base_linear
+        self.down_proj = nn.Linear(in_dim, bottleneck_dim)
+        self.act = nn.GELU()
+        self.up_proj = nn.Linear(bottleneck_dim, in_dim)
 
-        # 保持原始属性，防止 DINOv3 内部调用报错
-        self.in_features = base_linear.in_features
-        self.out_features = base_linear.out_features
-
-        # 确保原始全连接层被彻底冻结
-        for p in self.base.parameters():
-            p.requires_grad = False
-
-        self.r = r
-        self.alpha = alpha
-
-        # LoRA 的 A 和 B 矩阵
-        self.lora_A = nn.Parameter(torch.randn(r, self.in_features) * (1.0 / r))
-        self.lora_B = nn.Parameter(torch.zeros(self.out_features, r))
+        # 核心：将 up_proj 初始化为 0，使得训练初期 Adapter 像一个 Identity 映射，不破坏预训练权重
+        nn.init.zeros_(self.up_proj.weight)
+        nn.init.zeros_(self.up_proj.bias)
 
     def forward(self, x):
-        base_out = self.base(x)
-        lora_out = (x @ self.lora_A.t()) @ self.lora_B.t()
-        # 论文标准做法：残差相加
-        return base_out + self.alpha * lora_out
+        return self.up_proj(self.act(self.down_proj(x)))
 
 
-def apply_lora_to_dinov3_official(dinov3_model, r=8, alpha=1.0, verbose=False):
-    """
-    针对 torch.hub 加载的 Meta 官方 DINOv3 的 LoRA 注入函数
-    """
-    blocks = dinov3_model.blocks  # 官方 DINOv3 的 Transformer Blocks
+class ParallelAttnAdapterWrapper(nn.Module):
+    """将 Adapter 与原 Self-Attention 并行"""
 
-    for i, block in enumerate(blocks):
-        if verbose:
-            print(f"[LoRA] 正在将 LoRA 注入到 Block {i} 的 qkv 和 proj 层")
+    def __init__(self, attn_module, in_dim, bottleneck_dim):
+        super().__init__()
+        self.attn_module = attn_module
+        self.adapter = BottleneckAdapter(in_dim, bottleneck_dim)
 
-        # 将标准的 Linear 替换为带有旁路矩阵的 LoRALinear
-        block.attn.qkv = LoRALinear(block.attn.qkv, r=r, alpha=alpha)
-        block.attn.proj = LoRALinear(block.attn.proj, r=r, alpha=alpha)
+    def forward(self, x, attn_bias=None, rope=None):
+        # 原 Attention 分支
+        attn_out = self.attn_module(x, attn_bias=attn_bias, rope=rope)
+        # Adapter 并行分支
+        adp_out = self.adapter(x)
+        return attn_out + adp_out
 
+    def forward_list(self, x_list, attn_bias=None, rope_list=None):
+        """兼容 DINOv3 内部特有的列表前向传播机制"""
+        attn_out_list = self.attn_module.forward_list(x_list, attn_bias=attn_bias, rope_list=rope_list)
+
+        # 将 list 拼在一起过 Adapter 可以加速计算
+        x_flat, shapes, num_tokens = cat_keep_shapes(x_list)
+        adp_flat = self.adapter(x_flat)
+        adp_out_list = uncat_with_shapes(adp_flat, shapes, num_tokens)
+
+        return [a + adp for a, adp in zip(attn_out_list, adp_out_list)]
+
+
+class SequentialMLPAdapterWrapper(nn.Module):
+    """将 Adapter 串联在 MLP 之后"""
+
+    def __init__(self, mlp_module, in_dim, bottleneck_dim):
+        super().__init__()
+        self.mlp_module = mlp_module
+        self.adapter = BottleneckAdapter(in_dim, bottleneck_dim)
+
+    def forward(self, x):
+        mlp_out = self.mlp_module(x)
+        # 串联：Adapter 的输入是 MLP 的输出
+        adp_out = self.adapter(mlp_out)
+        return mlp_out + adp_out
+
+    def forward_list(self, x_list):
+        mlp_out_list = self.mlp_module.forward_list(x_list)
+
+        x_flat, shapes, num_tokens = cat_keep_shapes(mlp_out_list)
+        adp_flat = self.adapter(x_flat)
+        adp_out_list = uncat_with_shapes(adp_flat, shapes, num_tokens)
+
+        return [m + adp for m, adp in zip(mlp_out_list, adp_out_list)]
+
+
+def apply_bottleneck_adapter_to_dinov3(dinov3_model, target_layers, dim=1024, bottleneck_dim=64, use_attn=True,
+                                       use_mlp=False):
+    """注入函数"""
+    blocks = dinov3_model.blocks
+    for i in target_layers:
+        if i < len(blocks):
+            if use_attn:
+                blocks[i].attn = ParallelAttnAdapterWrapper(blocks[i].attn, dim, bottleneck_dim)
+            if use_mlp:
+                blocks[i].mlp = SequentialMLPAdapterWrapper(blocks[i].mlp, dim, bottleneck_dim)
     return dinov3_model
 
 class DINOV3Wrapper(nn.Module):
@@ -85,18 +123,37 @@ class DINOV3Wrapper(nn.Module):
         for p in self.model.parameters():
             p.requires_grad = False
 
+        # ==================== 新增：注入 Adapter ====================
+        # DINOv3-Large 的维度是 1024
+        target_layers = [6, 8, 10, 12, 14, 16, 18, 20]
+
+        apply_bottleneck_adapter_to_dinov3(
+            self.model,
+            target_layers=target_layers,
+            dim=1024,
+            bottleneck_dim=64,  # 你可以根据显存调整，通常 64 或 128
+            use_attn=True,  # Attention 旁的并行 Adapter
+            use_mlp=True  # MLP 后的串联 Adapter (解答你的第二个问题)
+        )
+
+        # 2. 重新解冻刚才注入的 adapter 的参数，确保能够反向传播
+        for name, p in self.model.named_parameters():
+            if "adapter" in name:
+                p.requires_grad = True
+        # =========================================================
+
     def forward(self, x):
         x = F.interpolate(
             x, size=(512, 512), mode="bilinear", align_corners=True, antialias=True
         )
-        with torch.no_grad():
-            with torch.autocast(device_type=self.device, dtype=torch.float32):
-                feats = self.model.get_intermediate_layers(
-                    x, n=range(self.n_layers), reshape=True, norm=True
-                )
-                feats_ = []
-                for i in range(len(self.extract_ids)):
-                    feats_.append(feats[self.extract_ids[i]])  # [B, N, C]
+        # 因为 Adapter 需要计算梯度，如果你用了 no_grad()，Adapter 就无法训练了！
+        with torch.autocast(device_type=self.device, dtype=torch.float32):
+            feats = self.model.get_intermediate_layers(
+                x, n=range(self.n_layers), reshape=True, norm=True
+            )
+            feats_ = []
+            for i in range(len(self.extract_ids)):
+                feats_.append(feats[self.extract_ids[i]])  # [B, N, C]
         return feats_
 
 
@@ -177,7 +234,7 @@ class LinearAdapter(nn.Module):
             self,
             in_dim=1024,  # DINOv3 ViT-L 的输出通道数
             out_dim=256,  # 对齐到 fpn_channels * 2
-            sizes=(96, 48, 24, 12),  # 你的金字塔特征尺寸
+            sizes=(64, 32, 16, 8),  # 你的金字塔特征尺寸
     ):
         super().__init__()
         self.sizes = list(sizes)
