@@ -28,15 +28,6 @@ class Load_Dataset(Dataset):
 
         self.resize = transforms.Resize((256, 256))
 
-        '''self.dir1 = os.path.join(opt.dataroot, opt.dataset, opt.phase, "A")
-        self.t1_paths, self.fnames = sorted(make_dataset(self.dir1))
-
-        self.dir2 = os.path.join(opt.dataroot, opt.dataset, opt.phase, "B")
-        self.t2_paths, _ = sorted(make_dataset(self.dir2))
-
-        self.dir_label = os.path.join(opt.dataroot, opt.dataset, opt.phase, "label")
-        self.label_paths, _ = sorted(make_dataset(self.dir_label))'''
-
         # 单输入分割 - 图像是jpg，标签是png
         self.image_dir = os.path.join(opt.dataroot, opt.dataset, opt.phase, "images")
         self.image_paths, self.fnames = sorted(make_dataset(self.image_dir))
@@ -76,28 +67,6 @@ class Load_Dataset(Dataset):
         return self.dataset_size
 
     def __getitem__(self, index):
-        '''t1_path = self.t1_paths[index]
-        fname = self.fnames[index]
-        img1 = Image.open(t1_path)
-
-        t2_path = self.t2_paths[index]
-        img2 = Image.open(t2_path)
-
-        label_path = self.label_paths[index]
-        label = np.array(Image.open(label_path)) / 255
-        label[label > 0] = 1
-        cd_label = Image.fromarray(label)
-
-        if self.opt.phase == "train":
-            _data = self.transform({"img1": img1, "img2": img2, "cd_label": cd_label})
-            img1, img2, cd_label = _data["img1"], _data["img2"], _data["cd_label"]
-
-        img1 = self.to_tensor(img1)
-        img2 = self.to_tensor(img2)
-        img1 = self.normalize(img1)
-        img2 = self.normalize(img2)
-        cd_label = torch.from_numpy(np.array(cd_label))
-        input_dict = {"img1": img1, "img2": img2, "cd_label": cd_label, "fname": fname}'''
 
         # 加载单张图像
         img_path = self.image_paths[index]

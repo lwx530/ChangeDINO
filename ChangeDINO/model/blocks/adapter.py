@@ -99,7 +99,6 @@ def apply_bottleneck_adapter_to_dinov3(dinov3_model, target_layers, dim=1024, bo
 class DINOV3Wrapper(nn.Module):
     def __init__(
         self,
-        # weights_path="dinov3/weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth",
         weights_path="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
         extract_ids=[5, 11, 17, 23],
         device="cuda",
@@ -125,7 +124,7 @@ class DINOV3Wrapper(nn.Module):
 
         # ==================== 新增：注入 Adapter ====================
         # DINOv3-Large 的维度是 1024
-        target_layers = [6, 8, 10, 12, 14, 16, 18, 20]
+        target_layers = [4, 5, 10, 11, 16, 17, 22, 23]
 
         apply_bottleneck_adapter_to_dinov3(
             self.model,

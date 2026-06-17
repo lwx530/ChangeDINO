@@ -110,53 +110,6 @@ class Trainval(object):
         with open(self.log_path, "a", encoding="utf-8") as f:
             f.write(line)
 
-    '''def _plot_cd_result(self, x, x2, pred, target, epoch, stage):
-        """
-        可视化训练/验证结果
-        x: 输入图像 [B, 3, H, W]
-        x2: 第二张图（单输入为None）
-        pred: 预测 [B, 2, H, W] 或 [B, H, W]
-        target: 标签 [B, 1, H, W] 或 [B, H, W]
-        """
-        # 1. 处理预测（如果是logits，取argmax）
-        if pred.dim() == 4 and pred.shape[1] > 1:  # [B, 2, H, W]
-            pred = torch.argmax(pred, dim=1)  # [B, H, W]
-
-        # 2. 确保pred和target都是3维 [B, H, W]
-        if pred.dim() == 4:  # [B, 1, H, W]
-            pred = pred.squeeze(1)
-        if target.dim() == 4:  # [B, 1, H, W]
-            target = target.squeeze(1)
-
-        # 3. 选择前8个样本可视化
-        x_vis = x[0:8]
-        pred_vis = pred[0:8]
-        target_vis = target[0:8]
-
-        # 4. 转换为可视化格式 [8, 3, H, W]
-        # 输入图像已经是3通道
-        vis_input = make_numpy_grid(de_norm(x_vis))
-
-        # 预测和标签是单通道，复制为3通道
-        pred_3ch = pred_vis.unsqueeze(1).repeat(1, 3, 1, 1)
-        target_3ch = target_vis.unsqueeze(1).repeat(1, 3, 1, 1)
-
-        vis_pred = make_numpy_grid(pred_3ch)
-        vis_gt = make_numpy_grid(target_3ch)
-
-        # 5. 拼接图像
-        if x2 is not None:
-            vis_input2 = make_numpy_grid(de_norm(x2[0:8]))
-            vis = np.concatenate([vis_input, vis_input2, vis_pred, vis_gt], axis=0)
-        else:
-            vis = np.concatenate([vis_input, vis_pred, vis_gt], axis=0)
-
-        # 6. 保存
-        vis = np.clip(vis, a_min=0.0, a_max=1.0)
-        file_name = os.path.join(self.vis_path, f"{stage}_epoch{epoch}.jpg")
-        plt.imsave(file_name, vis)
-        print(f"📸 可视化保存到: {file_name}")'''
-
     def train(self, epoch):
         tbar = tqdm(self.train_data, ncols=80)
         self.opt.phase = "train"

@@ -191,7 +191,6 @@ class Encoder(nn.Module):
             deform_groups=4,
             gamma_mode="SE",
             beta_mode="contextgatedconv",
-            # dino_weight="dinov3/weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth",
             dino_weight="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
             device="cuda",
             # extract_ids=[5, 11, 17, 23],
@@ -210,6 +209,7 @@ class Encoder(nn.Module):
         )
         dense_out_dim = fpn_channels * 2
         self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids)
+        self.layer_weights = nn.Parameter(torch.ones(4, 6))
 
         self.dense_adp = DenseAdapterLite(
             in_dim=1024, out_dim=dense_out_dim, bottleneck=fpn_channels // 2, share=False
@@ -261,18 +261,21 @@ class Encoder(nn.Module):
         fea = self.backbone.forward(x)
         fea = self.fpn(fea[-4:])  # t1_p1, t1_p2, t1_p3, t1_p4
 
-        # ds_fea = self.dino(x)  # [B, N, C]
-
         raw_ds_fea = self.dino(x)  # 获取24层
 
         # 将 24 层特征等分为 4 组，每组 6 层。
         # 采用求平均 (mean) 的方式，保证特征的量级稳定
         ds_fea = []
+        normalized_weights = F.softmax(self.layer_weights, dim=1)
         for i in range(4):
             # 取出当前层的 6 个特征图
             group_feats = raw_ds_fea[i * 6: (i + 1) * 6]
-            group_mean_feat = torch.mean(torch.stack(group_feats, dim=0), dim=0)
-            ds_fea.append(group_mean_feat)
+            stacked_feats = torch.stack(group_feats, dim=0)
+            # 提取这一组的 6 个权重 [6]
+            w = normalized_weights[i].view(6, 1, 1, 1, 1)
+            # 加权求和
+            group_weighted_feat = torch.sum(stacked_feats * w, dim=0)
+            ds_fea.append(group_weighted_feat)
 
         ds_fea_adapted = self.defect_adapter(ds_fea)
 
@@ -374,9 +377,6 @@ class Detector(nn.Module):
         self.p2_head = nn.Conv2d(fpn_channels, num_classes, 1)
 
     def forward(self, xs):
-        ### Extract backbone features
-        '''t1_p2, t1_p3, t1_p4, t1_p5 = x1s
-        t2_p2, t2_p3, t2_p4, t2_p5 = x2s'''
 
         # 1. 解包特征金字塔（单输入，没有差异计算
         fea_p2, fea_p3, fea_p4, fea_p5 = xs
