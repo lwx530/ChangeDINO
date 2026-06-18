@@ -209,7 +209,6 @@ class Encoder(nn.Module):
         )
         dense_out_dim = fpn_channels * 2
         self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids)
-        self.layer_weights = nn.Parameter(torch.ones(4, 6))
 
         self.dense_adp = DenseAdapterLite(
             in_dim=1024, out_dim=dense_out_dim, bottleneck=fpn_channels // 2, share=False
@@ -263,20 +262,16 @@ class Encoder(nn.Module):
 
         raw_ds_fea = self.dino(x)  # 获取24层
 
-        # 将 24 层特征等分为 4 组，每组 6 层。
-        # 采用求平均 (mean) 的方式，保证特征的量级稳定
-        ds_fea = []
-        normalized_weights = F.softmax(self.layer_weights, dim=1)
-        for i in range(4):
-            # 取出当前层的 6 个特征图
-            group_feats = raw_ds_fea[i * 6: (i + 1) * 6]
-            stacked_feats = torch.stack(group_feats, dim=0)
-            # 提取这一组的 6 个权重 [6]
-            w = normalized_weights[i].view(6, 1, 1, 1, 1)
-            # 加权求和
-            group_weighted_feat = torch.sum(stacked_feats * w, dim=0)
-            ds_fea.append(group_weighted_feat)
-
+        ds_fea = [
+            # Group 1: 提取第 4, 5 层 (索引为 4, 5)
+            torch.mean(torch.stack([raw_ds_fea[4], raw_ds_fea[5]], dim=0), dim=0),
+            # Group 2: 提取第 10, 11 层 (索引为 10, 11)
+            torch.mean(torch.stack([raw_ds_fea[10], raw_ds_fea[11]], dim=0), dim=0),
+            # Group 3: 提取第 16, 17 层 (索引为 16, 17)
+            torch.mean(torch.stack([raw_ds_fea[16], raw_ds_fea[17]], dim=0), dim=0),
+            # Group 4: 提取第 22, 23 层 (索引为 22, 23)
+            torch.mean(torch.stack([raw_ds_fea[22], raw_ds_fea[23]], dim=0), dim=0)
+        ]
         ds_fea_adapted = self.defect_adapter(ds_fea)
 
         enhanced_feas = []
@@ -288,6 +283,7 @@ class Encoder(nn.Module):
             enhanced_feas.append(gated_sfhm_out)
 
         final_fea = self.pff(enhanced_feas, ds_fea_adapted)
+
 
         # 将 PFF 的输出解包为四个尺度的特征图
         x1, x2, x3, x4 = final_fea
