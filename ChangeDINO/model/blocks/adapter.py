@@ -124,7 +124,7 @@ class DINOV3Wrapper(nn.Module):
 
         # ==================== 新增：注入 Adapter ====================
         # DINOv3-Large 的维度是 1024
-        target_layers = [4, 5, 10, 11, 16, 17, 22, 23]
+        target_layers = [3, 5, 9, 11, 15, 17, 21, 23]
 
         apply_bottleneck_adapter_to_dinov3(
             self.model,

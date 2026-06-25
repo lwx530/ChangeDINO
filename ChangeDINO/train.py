@@ -13,7 +13,6 @@ import random
 from datetime import datetime
 from util.util import make_numpy_grid, de_norm
 import matplotlib.pyplot as plt
-# from torch.utils.tensorboard import SummaryWriter
 
 
 def setup_seed(seed):
@@ -29,8 +28,6 @@ def setup_seed(seed):
     torch.backends.cudnn.enabled = True
 
 
-
-
 class Trainval(object):
     def __init__(self, opt):
         self.opt = opt
@@ -39,11 +36,13 @@ class Trainval(object):
         self.train_data = train_loader.load_data()
         train_size = len(train_loader)
         print("#training images = %d" % train_size)
-        self.opt.phase = "val"
-        val_loader = DataLoader(opt)
-        self.val_data = val_loader.load_data()
-        val_size = len(val_loader)
-        print("#validation images = %d" % val_size)
+
+        # 🌟 修改点 1：不加载 val，直接加载 test 数据集
+        self.opt.phase = "test"
+        test_loader = DataLoader(opt)
+        self.test_data = test_loader.load_data()
+        test_size = len(test_loader)
+        print("#testing images = %d" % test_size)
         self.opt.phase = "train"
 
         self.model = create_model(opt)
@@ -55,9 +54,9 @@ class Trainval(object):
         self.previous_best = 0.0
         self.M = MAE()
         self.EM = Emeasure()
-        self.FM = Fmeasure()  # mFβ, β²=0.3
-        self.SM = Smeasure()  # Sα, α=0.5
-        self.WFM = WeightedFmeasure()  # Fβw, β²=1
+        self.FM = Fmeasure()
+        self.SM = Smeasure()
+        self.WFM = WeightedFmeasure()
 
         self.alpha = 0.5
         self.beta = 0.5
@@ -66,24 +65,15 @@ class Trainval(object):
         self.vis_path = os.path.join(self.model.save_dir, opt.vis_path)
         os.makedirs(self.vis_path, exist_ok=True)
 
-        # ========== 添加TensorBoard ==========
-        '''self.tensorboard_dir = os.path.join(self.model.save_dir, "tensorboard")
-        os.makedirs(self.tensorboard_dir, exist_ok=True)
-        self.writer = SummaryWriter(log_dir=self.tensorboard_dir)
-
-        print(f"📊 TensorBoard日志保存到: {self.tensorboard_dir}")
-        print(f"启动命令: tensorboard --logdir={self.tensorboard_dir} --port=6006")'''
-        # ====================================
-
         if not os.path.exists(self.log_path):
             with open(self.log_path, "a", encoding="utf-8") as f:
-                f.write("# Record of training/validation metrics\n")
+                f.write("# Record of training/testing metrics\n")  # 修改了文字说明
                 f.write(
                     "# name: %s | backbone: %s\n"
                     % (opt.name, getattr(opt, "backbone", "NA"))
                 )
                 f.write("# time,epoch,train_loss,train_focal,train_dice,lr,")
-                f.write("val_metrics(json)\n")
+                f.write("test_metrics(json)\n")  # 修改了文字说明
 
     def _rescheduler(self, opt):
         self.model.optimizer = optim.AdamW(
@@ -95,7 +85,7 @@ class Trainval(object):
         self.optimizer = self.model.optimizer
         self.schedular = self.model.schedular
 
-    def _append_log_line(self, epoch: int, train_stats: dict, val_scores: dict):
+    def _append_log_line(self, epoch: int, train_stats: dict, test_scores: dict):
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         line = (
@@ -104,7 +94,7 @@ class Trainval(object):
                 f"{train_stats.get('focal', float('nan')):.6f},"
                 f"{train_stats.get('dice', float('nan')):.6f},"
                 f"{train_stats.get('lr', float('nan')):.8f},"
-                + json.dumps(val_scores, ensure_ascii=False)
+                + json.dumps(test_scores, ensure_ascii=False)
                 + "\n"
         )
         with open(self.log_path, "a", encoding="utf-8") as f:
@@ -135,16 +125,6 @@ class Trainval(object):
             _dice_loss += dice.item()
             _boundary_loss += boundary.item()
             last_lr = self.optimizer.param_groups[0]["lr"]
-            # del loss
-
-            # ========== 添加TensorBoard记录 ==========
-            '''global_step = epoch * len(tbar) + i
-            self.writer.add_scalar('Loss/train_total', loss.item(), global_step)
-            self.writer.add_scalar('Loss/train_focal', focal.item(), global_step)
-            self.writer.add_scalar('Loss/train_dice', dice.item(), global_step)
-            self.writer.add_scalar('Loss/train_boundary', boundary.item(), global_step)
-            self.writer.add_scalar('LearningRate', last_lr, global_step)'''
-            # ========================================
 
             tbar.set_description(
                 "Loss: %.3f, Focal: %.3f, Dice: %.3f, Bnd: %.3f"
@@ -156,10 +136,6 @@ class Trainval(object):
                 )
             )
 
-            '''if i == len(tbar) - 1:
-                self._plot_cd_result(
-                    data["image"], None, pred, data["label"], epoch, "train"
-                )'''
         self.schedular.step()
 
         n = max(1, i + 1)
@@ -170,8 +146,9 @@ class Trainval(object):
             "lr": last_lr,
         }
 
-    def val(self, epoch):
-        tbar = tqdm(self.val_data, ncols=80)
+    # 🌟 修改点 2：将 val 函数改为 test 函数，处理 test 数据
+    def test(self, epoch):
+        tbar = tqdm(self.test_data, ncols=80)
 
         # 重置所有指标
         self.M = MAE()
@@ -180,7 +157,7 @@ class Trainval(object):
         self.SM = Smeasure()
         self.WFM = WeightedFmeasure()
 
-        self.opt.phase = "val"
+        self.opt.phase = "test"
         self.model.eval()
 
         with torch.no_grad():
@@ -189,52 +166,35 @@ class Trainval(object):
                     _data["image"].cuda()
                 )
                 val_target = _data["label"].detach()
-                #val_pred = torch.argmax(val_pred.detach(), dim=1)
 
-                # 1. 获取概率图（不是二值图）
-                val_pred_prob = torch.softmax(val_pred.detach(), dim=1)[:, 1]  # 前景概率 [B, H, W]
+                # 获取概率图
+                val_pred_prob = torch.softmax(val_pred.detach(), dim=1)[:, 1]
 
-                # 2. 确保标签是二维 [B, H, W]
-                if val_target.dim() == 4:  # [B, 1, H, W]
-                    val_target = val_target.squeeze(1)  # 变成 [B, H, W]
+                # 确保标签是二维
+                if val_target.dim() == 4:
+                    val_target = val_target.squeeze(1)
 
-                # 保存处理后的标签用于可视化
-                val_target_vis = val_target
-
-                # 2. 对batch中的每个样本更新WPFormer指标
+                    # 对batch中的每个样本更新WPFormer指标
                 for j in range(val_pred_prob.shape[0]):
-                    # 获取单个样本
-                    pred_np = val_pred_prob[j].cpu().numpy()  # [H, W]
-                    target_np = val_target[j].cpu().numpy()  # [H, W]
+                    pred_np = val_pred_prob[j].cpu().numpy()
+                    target_np = val_target[j].cpu().numpy()
 
-                    # 转换为 [0, 255] uint8
                     pred_uint8 = (pred_np * 255).astype(np.uint8)
                     gt_uint8 = (target_np * 255).astype(np.uint8)
 
-                    # 更新所有WPFormer指标
                     self.M.step(pred_uint8, gt_uint8, normalize=True)
                     self.EM.step(pred_uint8, gt_uint8, normalize=True)
                     self.FM.step(pred_uint8, gt_uint8, normalize=True)
                     self.SM.step(pred_uint8, gt_uint8, normalize=True)
                     self.WFM.step(pred_uint8, gt_uint8, normalize=True)
 
-                '''if i == len(tbar) - 1:
-                    val_pred_binary = (val_pred_prob > 0.5).long()
-                    self._plot_cd_result(
-                        _data["image"],
-                        None,
-                        val_pred_binary,
-                        val_target_vis,
-                        epoch,
-                        "val",
-                    )'''
             M_result = self.M.get_results()
             EM_result = self.EM.get_results()
             FM_result = self.FM.get_results()
             SM_result = self.SM.get_results()
             WFM_result = self.WFM.get_results()
 
-            val_scores = {
+            test_scores = {
                 'MAE': M_result['mae'],
                 'meanEm': EM_result['em']['adp'],
                 'Fmeasure': FM_result['fm']['adp'],
@@ -242,33 +202,29 @@ class Trainval(object):
                 'wFmeasure': WFM_result['wfm']
             }
 
-            # ========== 添加TensorBoard记录 ==========
-            '''for k, v in val_scores.items():
-                self.writer.add_scalar(f'Metrics/val_{k}', v, epoch)
-
-            # 特别记录最佳IoU
-            current_best = val_scores.get('wFmeasure', 0)
-            if current_best >= self.previous_best:
-                self.writer.add_scalar('Metrics/best_wFmeasure', current_best, epoch)'''
-            # ========================================
-
             message = "(phase: %s) " % (self.opt.phase)
-            for k, v in val_scores.items():
+            for k, v in test_scores.items():
                 message += "%s: %.6f " % (k, v)
             print(message)
 
-        current_score = val_scores.get('wFmeasure', 0.0)
+        # 这里你用的是 wFmeasure 作为最佳模型的判断标准，也可以换成和 WPFormer 一样的 Smeasure
+        current_score = test_scores.get('Smeasure', 0.0)
         if current_score >= self.previous_best:
             self.model.save(self.opt.name, self.opt.backbone)
             self.previous_best = current_score
+            print("🚀 New best model saved on Test Set!")
 
-        return val_scores
+        return test_scores
 
 
 if __name__ == "__main__":
     opt = Options().parse()
     trainval = Trainval(opt)
     setup_seed(seed=1)
+
+    # 🌟 修改点 3：参考 WPFormer，设置一个延迟测试的 epoch_val
+    # 比如如果是 150 轮，可以设置前 100 轮不测试，节约大量训练时间
+    epoch_val = 100
 
     try:
         for epoch in range(1, opt.num_epochs + 1):
@@ -278,14 +234,18 @@ if __name__ == "__main__":
             )
             if epoch == int(opt.num_epochs * 0.9):
                 trainval._rescheduler(opt)
-            train_stats = trainval.train(epoch)
-            val_scores = trainval.val(epoch)
 
-            trainval._append_log_line(epoch, train_stats, val_scores)
+            # 训练阶段
+            train_stats = trainval.train(epoch)
+
+            # 评估阶段 (只有大于等于 epoch_val 才进行测试集推理计算)
+            if epoch >= epoch_val:
+                test_scores = trainval.test(epoch)
+                trainval._append_log_line(epoch, train_stats, test_scores)
+            else:
+                trainval._append_log_line(epoch, train_stats, {"Message": "Skipped test"})
+
     finally:
-        # ========== 关闭TensorBoard writer ==========
-        '''if hasattr(trainval, 'writer'):
-            trainval.writer.close()'''
-        # ============================================
+        pass
 
     print("Done!")

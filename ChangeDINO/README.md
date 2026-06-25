@@ -57,7 +57,7 @@ For the full ChangeDINO's pre-trained weights, which can be obtained from the fo
 ## Train / Validate
 ```bash
 cd dinov3/ChangeDINO
-python trainval.py \
+python train.py \
   --name WHU-ChangeDINO \
   --dataset WHU-CD \
   --dataroot /path/to/CD-Dataset \
