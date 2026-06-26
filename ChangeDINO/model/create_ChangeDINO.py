@@ -8,6 +8,7 @@ import torch.optim as optim
 from .loss.focal import FocalLoss
 from .loss.dice import DICELoss
 from .loss.boundary import BoundaryLoss
+from .loss.hybrid_loss import HybridLoss
 
 def get_model(backbone_name="mobilenetv2", fpn_channels=128, n_layers=[1, 1, 1], **kwargs):
     model = ChangeModel(backbone_name, fpn_channels, n_layers=n_layers, **kwargs)
@@ -36,8 +37,9 @@ class Model(nn.Module):
             n_layers=opt.n_layers,
             extract_ids=opt.extract_ids,
         )
-        self.focal = FocalLoss(alpha=opt.alpha, gamma=opt.gamma)
-        self.dice = DICELoss()
+        # self.focal = FocalLoss(alpha=opt.alpha, gamma=opt.gamma)
+        # self.dice = DICELoss()
+        self.hybrid_loss = HybridLoss()
         self.boundary_loss = BoundaryLoss()
 
         self.optimizer = optim.AdamW(
@@ -56,11 +58,14 @@ class Model(nn.Module):
     def forward(self, x, label):
         final_pred, preds, edge_mask = self.model(x)
         label = label.long()
-        focal = self.focal(final_pred, label)
+        '''focal = self.focal(final_pred, label)
         dice = self.dice(final_pred, label)
         for i in range(len(preds)):
             focal += self.focal(preds[i], label)
-            dice += 0.5 * self.dice(preds[i], label)
+            dice += 0.5 * self.dice(preds[i], label)'''
+        hybrid = self.hybrid_loss(final_pred, label)
+        for p in preds:
+            hybrid += 0.5 * self.hybrid_loss(p, label)
 
         edge_mask_up = F.interpolate(
             edge_mask,
@@ -70,7 +75,7 @@ class Model(nn.Module):
         )
         boundary = self.boundary_loss(edge_mask_up, label)
 
-        return final_pred, focal, dice, boundary
+        return final_pred, hybrid, boundary
 
     @torch.inference_mode()
     def inference(self, x):

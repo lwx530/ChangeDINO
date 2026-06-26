@@ -91,8 +91,7 @@ class Trainval(object):
         line = (
                 f"{ts},{epoch},"
                 f"{train_stats.get('loss', float('nan')):.6f},"
-                f"{train_stats.get('focal', float('nan')):.6f},"
-                f"{train_stats.get('dice', float('nan')):.6f},"
+                f"{train_stats.get('hybrid', float('nan')):.6f},"
                 f"{train_stats.get('lr', float('nan')):.8f},"
                 + json.dumps(test_scores, ensure_ascii=False)
                 + "\n"
@@ -104,34 +103,33 @@ class Trainval(object):
         tbar = tqdm(self.train_data, ncols=80)
         self.opt.phase = "train"
         _loss = 0.0
-        _focal_loss = 0.0
-        _dice_loss = 0.0
+        # _focal_loss = 0.0
+        # _dice_loss = 0.0
+        _hybrid = 0.0
         _boundary_loss = 0.0
         last_lr = self.optimizer.param_groups[0]["lr"]
 
         for i, data in enumerate(tbar):
             self.model.model.train()
-            pred, focal, dice, boundary = self.model(
+            pred, hybrid, boundary = self.model(
                 data["image"].cuda(), data["label"].cuda()
             )
 
-            loss = focal * self.alpha + dice + boundary * self.beta
+            loss = hybrid + boundary * self.beta
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
             _loss += loss.item()
-            _focal_loss += focal.item()
-            _dice_loss += dice.item()
+            _hybrid += hybrid.item()
             _boundary_loss += boundary.item()
             last_lr = self.optimizer.param_groups[0]["lr"]
 
             tbar.set_description(
-                "Loss: %.3f, Focal: %.3f, Dice: %.3f, Bnd: %.3f"
+                "Loss: %.3f, Hybrid: %.3f, Bnd: %.3f"
                 % (
                     _loss / (i + 1),
-                    _focal_loss / (i + 1),
-                    _dice_loss / (i + 1),
+                    _hybrid / (i + 1),
                     _boundary_loss / (i + 1)
                 )
             )
@@ -141,8 +139,7 @@ class Trainval(object):
         n = max(1, i + 1)
         return {
             "loss": _loss / n,
-            "focal": _focal_loss / n,
-            "dice": _dice_loss / n,
+            "hybrid": _hybrid / n,
             "lr": last_lr,
         }
 
@@ -224,7 +221,7 @@ if __name__ == "__main__":
 
     # 🌟 修改点 3：参考 WPFormer，设置一个延迟测试的 epoch_val
     # 比如如果是 150 轮，可以设置前 100 轮不测试，节约大量训练时间
-    epoch_val = 100
+    epoch_val = 60
 
     try:
         for epoch in range(1, opt.num_epochs + 1):
