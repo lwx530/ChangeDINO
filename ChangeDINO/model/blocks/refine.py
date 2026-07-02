@@ -42,8 +42,8 @@ class LearnableSoftMorph(nn.Module):
         return -self._soft_dilate(-x, k, -w, tau)
 
     def forward(self, logit_1ch):
-        _, C, _, _ = logit_1ch.shape
-        assert C == 1, "Expect 1-channel logits for binary segmentation."
+        # _, C, _, _ = logit_1ch.shape
+        # assert C == 1, "Expect 1-channel logits for binary segmentation."
 
         p_fg = torch.sigmoid(logit_1ch)
         tau = torch.exp(self.log_tau).clamp_min(1e-4)

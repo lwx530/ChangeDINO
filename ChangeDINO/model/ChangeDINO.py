@@ -305,12 +305,12 @@ class Detector(nn.Module):
             self,
             fpn_channels=128,
             n_layers=[1, 1, 1, 1],
-            num_classes=2,  # 新增：分割类别数，默认2类（缺陷/背景）
+            # num_classes=1,
             **kwargs,
     ):
         super().__init__()
 
-        self.num_classes = num_classes
+        # self.num_classes = num_classes
 
         # 保持门控融合模块
         self.p5_to_p4 = FuseGated(fpn_channels)
@@ -349,10 +349,10 @@ class Detector(nn.Module):
                 LayerNorm_type="BiasFree",
             ) for _ in range(n_layers[3])]
         )
-        self.p5_head = nn.Conv2d(fpn_channels, num_classes, 1)
-        self.p4_head = nn.Conv2d(fpn_channels, num_classes, 1)
-        self.p3_head = nn.Conv2d(fpn_channels, num_classes, 1)
-        self.p2_head = nn.Conv2d(fpn_channels, num_classes, 1)
+        self.p5_head = nn.Conv2d(fpn_channels, 1, 1)
+        self.p4_head = nn.Conv2d(fpn_channels, 1, 1)
+        self.p3_head = nn.Conv2d(fpn_channels, 1, 1)
+        self.p2_head = nn.Conv2d(fpn_channels, 1, 1)
 
     def forward(self, xs):
 

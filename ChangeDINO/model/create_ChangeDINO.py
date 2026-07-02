@@ -57,7 +57,7 @@ class Model(nn.Module):
 
     def forward(self, x, label):
         final_pred, preds, edge_mask = self.model(x)
-        label = label.long()
+        # label = label.long()
         hybrid = self.hybrid_loss(final_pred, label)
         for p in preds:
             hybrid += 0.5 * self.hybrid_loss(p, label)

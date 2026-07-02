@@ -161,7 +161,8 @@ class Trainval(object):
                 val_target = _data["label"].detach()
 
                 # 获取概率图
-                val_pred_prob = torch.softmax(val_pred.detach(), dim=1)[:, 1]
+                # val_pred_prob = torch.softmax(val_pred.detach(), dim=1)[:, 1]
+                val_pred_prob = val_pred.squeeze(1)
 
                 # 确保标签是二维
                 if val_target.dim() == 4:

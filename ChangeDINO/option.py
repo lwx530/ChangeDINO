@@ -8,7 +8,7 @@ class Options:
 
     def init(self):
         self.parser.add_argument(
-            "--gpu_ids", type=str, default="2", help="gpu ids: e.g. 0. use -1 for CPU"
+            "--gpu_ids", type=str, default="0", help="gpu ids: e.g. 0. use -1 for CPU"
         )
         self.parser.add_argument("--name", type=str, default="ESDI-32")
         self.parser.add_argument(
