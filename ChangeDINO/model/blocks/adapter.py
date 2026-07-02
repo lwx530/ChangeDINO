@@ -96,6 +96,33 @@ def apply_bottleneck_adapter_to_dinov3(dinov3_model, target_layers, dim=1024, bo
                 blocks[i].mlp = SequentialMLPAdapterWrapper(blocks[i].mlp, dim, bottleneck_dim)
     return dinov3_model
 
+def sal_guide(feature, sal, number):
+    feature_list = torch.chunk(feature, number, dim=1)
+    out = torch.cat((feature_list[0], sal), dim=1)
+    for i in range(1, number):
+        out = torch.cat((out, feature_list[i], sal), dim=1)
+    return out
+
+class PreBlockAdapter(nn.Module):
+    def __init__(self, blk):
+        super().__init__()
+        self.block = blk
+        dim = blk.attn.qkv.in_features
+        self.prompt_learn = nn.Sequential(
+            nn.Linear(dim, 32),
+            nn.GELU(),
+            nn.Linear(32, dim),
+            nn.GELU()
+        )
+
+    def forward(self, x, rope=None):
+        prompt = self.prompt_learn(x)
+        return self.block(x + prompt, rope)
+
+    def forward_list(self, x_list, rope_list=None):
+        return [self.block(x + self.mlp(x), rope)
+                for x, rope in zip(x_list, rope_list if rope_list else [None] * len(x_list))]
+
 class DINOV3Wrapper(nn.Module):
     def __init__(
         self,
@@ -122,24 +149,15 @@ class DINOV3Wrapper(nn.Module):
         for p in self.model.parameters():
             p.requires_grad = False
 
-        # ==================== 新增：注入 Adapter ====================
-        # DINOv3-Large 的维度是 1024
         target_layers = [6, 8, 10, 12, 14, 16, 18, 20]
 
-        apply_bottleneck_adapter_to_dinov3(
-            self.model,
-            target_layers=target_layers,
-            dim=1024,
-            bottleneck_dim=64,  # 你可以根据显存调整，通常 64 或 128
-            use_attn=True,  # Attention 旁的并行 Adapter
-            use_mlp=True  # MLP 后的串联 Adapter (解答你的第二个问题)
-        )
+        blocks = self.model.blocks
+        for i in target_layers:
+            blocks[i] = PreBlockAdapter(blocks[i])
 
-        # 2. 重新解冻刚才注入的 adapter 的参数，确保能够反向传播
         for name, p in self.model.named_parameters():
-            if "adapter" in name:
+            if "prompt_learn" in name:
                 p.requires_grad = True
-        # =========================================================
 
     def forward(self, x):
         x = F.interpolate(

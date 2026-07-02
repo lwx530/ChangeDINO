@@ -102,32 +102,24 @@ class Trainval(object):
         tbar = tqdm(self.train_data, ncols=80)
         self.opt.phase = "train"
         _loss = 0.0
-        _hybrid = 0.0
-        _boundary_loss = 0.0
         last_lr = self.optimizer.param_groups[0]["lr"]
 
         for i, data in enumerate(tbar):
             self.model.model.train()
-            pred, hybrid, boundary = self.model(
+            _, loss = self.model(
                 data["image"].cuda(), data["label"].cuda()
             )
-
-            loss = hybrid + boundary * self.beta
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
             _loss += loss.item()
-            _hybrid += hybrid.item()
-            _boundary_loss += boundary.item()
             last_lr = self.optimizer.param_groups[0]["lr"]
 
             tbar.set_description(
-                "Loss: %.3f, Hybrid: %.3f, Bnd: %.3f"
+                "Loss: %.3f"
                 % (
                     _loss / (i + 1),
-                    _hybrid / (i + 1),
-                    _boundary_loss / (i + 1)
                 )
             )
 
@@ -136,7 +128,6 @@ class Trainval(object):
         n = max(1, i + 1)
         return {
             "loss": _loss / n,
-            "hybrid": _hybrid / n,
             "lr": last_lr,
         }
 
@@ -215,7 +206,7 @@ if __name__ == "__main__":
     trainval = Trainval(opt)
     setup_seed(seed=1)
 
-    epoch_val = 60
+    epoch_val = 0
 
     try:
         for epoch in range(1, opt.num_epochs + 1):

@@ -56,26 +56,36 @@ class Model(nn.Module):
         print("---------- Networks initialized -------------")
 
     def forward(self, x, label):
-        final_pred, preds, edge_mask = self.model(x)
-        # label = label.long()
-        hybrid = self.hybrid_loss(final_pred, label)
-        for p in preds:
-            hybrid += 0.5 * self.hybrid_loss(p, label)
+        final_pred, coarse_preds, refined_preds, guided_preds, edge_mask = self.model(x)
+
+        # 主损失
+        loss = self.hybrid_loss(final_pred, label)
+
+        # DINO 粗预测辅助损失
+        for p in coarse_preds:
+            loss += 0.3 * self.hybrid_loss(p, label)
+
+        # CNN 细化辅助损失
+        for p in refined_preds:
+            loss += 0.5 * self.hybrid_loss(p, label)
+
+        # 反哺后预测辅助损失
+        for k, p in guided_preds.items():
+            loss += 0.3 * self.hybrid_loss(p, label)
 
         edge_mask_up = F.interpolate(
             edge_mask,
-            size=label.shape[-2:],  # 获取 label 的 H, W
+            size=label.shape[-2:],
             mode="bilinear",
             align_corners=False
         )
-        boundary = self.boundary_loss(edge_mask_up, label)
+        loss += self.boundary_loss(edge_mask_up, label) * 0.5
 
-        return final_pred, hybrid, boundary
+        return final_pred, loss
 
     @torch.inference_mode()
     def inference(self, x):
-        pred = self.model._forward(x)
-        return pred
+        return self.model._forward(x)
 
     def load_ckpt(self, network, optimizer, name, backbone):
         save_filename = "%s_%s_best.pth" % (name, backbone)
