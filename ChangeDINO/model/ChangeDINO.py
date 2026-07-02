@@ -8,7 +8,7 @@ import numpy as np
 
 from .blocks.fpn import FPN, DsBnRelu
 from .blocks.cbam import CBAM
-from .blocks.adapter import DINOV3Wrapper, DenseAdapterLite, LinearAdapter
+from .blocks.adapter import DINOV3Wrapper, LinearAdapter
 from .blocks.diffatts import TransformerBlock
 from .blocks.refine import LearnableSoftMorph
 from .blocks.sfhm import SFHM
@@ -53,7 +53,7 @@ import torch.nn as nn
 
 
 # 定义一个新的并行融合块
-'''class ParallelFusionBlock(nn.Module):
+class ParallelFusionBlock(nn.Module):
     def __init__(self, in_channels, out_channels, reduction_ratio=8):
         super().__init__()
 
@@ -82,8 +82,6 @@ import torch.nn as nn
         # 此时的 x_reduced 保留了最原始的高频突变，CBAM 能更准地抓取 MaxPool 和 AvgPool
         out_attn = self.attn_branch(x_reduced)
 
-        # ================== 融合 ==================
-        # 残差相加：网络会自适应地结合平滑的背景和锐利的缺陷边缘
         return out_conv + out_attn
 
 
@@ -130,9 +128,9 @@ class PyramidFeatureFusion(nn.Module):
         x1 = torch.cat([x1, a1], 1)
         x1 = self.c1(x1)
 
-        return x1, x2, x3, x4'''
+        return x1, x2, x3, x4
 
-class PyramidFeatureFusion(nn.Module):
+'''class PyramidFeatureFusion(nn.Module):
     def __init__(
         self,
         in_dims=[128, 128, 128, 128],
@@ -180,7 +178,7 @@ class PyramidFeatureFusion(nn.Module):
         x1 = torch.cat([x1, a1], 1)
         x1 = self.c1(x1)
 
-        return x1, x2, x3, x4
+        return x1, x2, x3, x4'''
 
 
 class Encoder(nn.Module):
@@ -193,7 +191,7 @@ class Encoder(nn.Module):
             beta_mode="contextgatedconv",
             dino_weight="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
             device="cuda",
-            # extract_ids=[5, 11, 17, 23],
+            # extract_ids=[7, 8, 10, 11, 13, 14, 16, 17],
             extract_ids=list(range(24)),
             **kwargs,
     ):
@@ -210,10 +208,6 @@ class Encoder(nn.Module):
         dense_out_dim = fpn_channels * 2
         self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids)
 
-        self.dense_adp = DenseAdapterLite(
-            in_dim=1024, out_dim=dense_out_dim, bottleneck=fpn_channels // 2, share=False
-        )
-
         self.defect_adapter = LinearAdapter(
             in_dim=1024,
             out_dim=dense_out_dim,  # 即 256
@@ -229,9 +223,6 @@ class Encoder(nn.Module):
 
         self.srf_mask_gen = SRFMaskGenerator(in_channels=fpn_channels)
 
-        # ==================== 新增：SFHM 前置处理模块 ====================
-        # 因为我们要把 FPN(128) 和 Adapter(256) 拼起来，维度会变成 384
-        # 需要先用一个 1x1 卷积降维回 128，再送入 SFHM
         self.fusion_projs = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(fpn_channels + dense_out_dim, fpn_channels, kernel_size=1, bias=False),
@@ -258,12 +249,10 @@ class Encoder(nn.Module):
     def forward(self, x):
 
         fea = self.backbone.forward(x)
-        fea = self.fpn(fea[-4:])  # t1_p1, t1_p2, t1_p3, t1_p4
+        fea = self.fpn(fea[-4:])    # channel：128  size:8,16,32,64
 
         raw_ds_fea = self.dino(x)  # 获取24层
 
-        # 将 24 层特征等分为 4 组，每组 6 层。
-        # 采用求平均 (mean) 的方式，保证特征的量级稳定
         ds_fea = []
         for i in range(4):
             # 取出当前层的 6 个特征图
@@ -283,14 +272,9 @@ class Encoder(nn.Module):
 
         final_fea = self.pff(enhanced_feas, ds_fea_adapted)
 
-        # 将 PFF 的输出解包为四个尺度的特征图
         x1, x2, x3, x4 = final_fea
-        # 【SRF 关键点 2】：执行边界锐化
-        # =========================================================
-        # A. 用浅层特征生成高清边界掩码 (Shape: [B, 1, H, W])
         edge_mask = self.srf_mask_gen(x1)
 
-        # 3. 仅在干净的掩码区域执行特征锐化
         x1_sharpened = x1 * (1.0 + edge_mask)
 
         return (x1_sharpened, x2, x3, x4), edge_mask
@@ -372,7 +356,6 @@ class Detector(nn.Module):
 
     def forward(self, xs):
 
-        # 1. 解包特征金字塔（单输入，没有差异计算
         fea_p2, fea_p3, fea_p4, fea_p5 = xs
 
         # 2. 自顶向下处理（与原来类似，但没有diff计算）
@@ -425,13 +408,11 @@ class ChangeModel(nn.Module):
         fea, edge_mask = self.encoder(x)
         pred, _, _, _ = self.detector(fea)
         pred = self.refiner(pred)
-        return pred                   # 训练的时候用这个
+        return pred
 
     def forward(self, x):
         # for training
-        ## change detection
         fea, edge_mask = self.encoder(x)
-
         preds = self.detector(fea)
         final_pred = self.refiner(preds[0])
         return final_pred, preds, edge_mask  # pred, pred_p2, pred_p3, pred_p4, pred_p5

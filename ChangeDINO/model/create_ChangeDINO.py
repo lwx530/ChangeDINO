@@ -58,11 +58,6 @@ class Model(nn.Module):
     def forward(self, x, label):
         final_pred, preds, edge_mask = self.model(x)
         label = label.long()
-        '''focal = self.focal(final_pred, label)
-        dice = self.dice(final_pred, label)
-        for i in range(len(preds)):
-            focal += self.focal(preds[i], label)
-            dice += 0.5 * self.dice(preds[i], label)'''
         hybrid = self.hybrid_loss(final_pred, label)
         for p in preds:
             hybrid += 0.5 * self.hybrid_loss(p, label)

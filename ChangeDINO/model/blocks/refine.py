@@ -41,11 +41,11 @@ class LearnableSoftMorph(nn.Module):
         # min(x+s) = -softmax( -x + (-s) )
         return -self._soft_dilate(-x, k, -w, tau)
 
-    def forward(self, logit_2ch):
-        _, C, _, _ = logit_2ch.shape
-        assert C == 2, "Expect 2-channel logits for binary segmentation."
+    def forward(self, logit_1ch):
+        _, C, _, _ = logit_1ch.shape
+        assert C == 1, "Expect 1-channel logits for binary segmentation."
 
-        p_fg = F.softmax(logit_2ch, dim=1)[:, 1:2]  # [B,1,H,W]
+        p_fg = torch.sigmoid(logit_1ch)
         tau = torch.exp(self.log_tau).clamp_min(1e-4)
 
         # Open: erode -> dilate
@@ -58,7 +58,6 @@ class LearnableSoftMorph(nn.Module):
         fg_logit_refined = torch.logit(p.clamp(1e-6, 1-1e-6), eps=1e-6)
 
         alpha = torch.sigmoid(self.alpha_raw)  # [0,1]
-        out = logit_2ch.clone()
-        out[:, 1:2] = out[:, 1:2] + alpha * (fg_logit_refined - out[:, 1:2])
+        out = logit_1ch + alpha * (fg_logit_refined - logit_1ch)
 
         return out

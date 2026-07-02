@@ -37,7 +37,6 @@ class Trainval(object):
         train_size = len(train_loader)
         print("#training images = %d" % train_size)
 
-        # 🌟 修改点 1：不加载 val，直接加载 test 数据集
         self.opt.phase = "test"
         test_loader = DataLoader(opt)
         self.test_data = test_loader.load_data()
@@ -103,8 +102,6 @@ class Trainval(object):
         tbar = tqdm(self.train_data, ncols=80)
         self.opt.phase = "train"
         _loss = 0.0
-        # _focal_loss = 0.0
-        # _dice_loss = 0.0
         _hybrid = 0.0
         _boundary_loss = 0.0
         last_lr = self.optimizer.param_groups[0]["lr"]
@@ -143,7 +140,6 @@ class Trainval(object):
             "lr": last_lr,
         }
 
-    # 🌟 修改点 2：将 val 函数改为 test 函数，处理 test 数据
     def test(self, epoch):
         tbar = tqdm(self.test_data, ncols=80)
 
@@ -209,7 +205,6 @@ class Trainval(object):
         if current_score >= self.previous_best:
             self.model.save(self.opt.name, self.opt.backbone)
             self.previous_best = current_score
-            print("🚀 New best model saved on Test Set!")
 
         return test_scores
 
@@ -219,8 +214,6 @@ if __name__ == "__main__":
     trainval = Trainval(opt)
     setup_seed(seed=1)
 
-    # 🌟 修改点 3：参考 WPFormer，设置一个延迟测试的 epoch_val
-    # 比如如果是 150 轮，可以设置前 100 轮不测试，节约大量训练时间
     epoch_val = 60
 
     try:
