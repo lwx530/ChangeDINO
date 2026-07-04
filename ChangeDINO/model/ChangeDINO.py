@@ -262,7 +262,7 @@ class TwoStageModel(nn.Module):
 
     @torch.inference_mode()
     def _forward(self, x):
-        final_pred, _, _, _ = self.forward(x)
+        final_pred, _, _, _, _ = self.forward(x)
         return final_pred
 
 class ChangeModel(nn.Module):

@@ -153,7 +153,7 @@ class Trainval(object):
 
                 # 获取概率图
                 # val_pred_prob = torch.softmax(val_pred.detach(), dim=1)[:, 1]
-                val_pred_prob = val_pred.squeeze(1)
+                val_pred_prob = torch.sigmoid(val_pred).squeeze(1)
 
                 # 确保标签是二维
                 if val_target.dim() == 4:
@@ -206,7 +206,7 @@ if __name__ == "__main__":
     trainval = Trainval(opt)
     setup_seed(seed=1)
 
-    epoch_val = 0
+    epoch_val = 60
 
     try:
         for epoch in range(1, opt.num_epochs + 1):
