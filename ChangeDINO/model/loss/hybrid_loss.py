@@ -13,8 +13,6 @@ class HybridLoss(nn.Module):
         self.bce = nn.BCELoss(size_average=True)
 
     def forward(self, pred, target):
-        # 将 2 通道输出转换为 1 通道的前景概率图
-        # pred_prob = torch.softmax(pred, dim=1)[:, 1:2]
         pred_prob = torch.sigmoid(pred)
         target_f = target.float()
         if target_f.dim() == 3:

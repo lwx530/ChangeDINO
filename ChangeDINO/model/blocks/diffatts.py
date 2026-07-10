@@ -135,8 +135,6 @@ class TransformerBlock(nn.Module):
         self,
         dim,
         num_channel_heads=8,
-        num_spatial_heads=4,
-        depth=1,
         ffn_expansion_factor=2,
         bias=False,
         LayerNorm_type="WithBias",
@@ -147,14 +145,10 @@ class TransformerBlock(nn.Module):
 
         self.norm1 = LayerNorm(dim, LayerNorm_type)
         self.norm2 = LayerNorm(dim, LayerNorm_type)
-        self.norm3 = LayerNorm(dim, LayerNorm_type)
-        self.norm4 = LayerNorm(dim, LayerNorm_type)
 
         self.channel_ffn = FeedForward(dim, ffn_expansion_factor * dim)
-        self.spatial_ffn = FeedForward(dim, ffn_expansion_factor * dim)
 
     def forward(self, x):
-        x = x + self.spatial_ffn(self.norm2(x))
-        x = x + self.channel_attn(self.norm3(x))
-        x = x + self.channel_ffn(self.norm4(x))
+        x = x + self.norm1(self.channel_attn(x))
+        x = x + self.norm2(self.channel_ffn(x))
         return x

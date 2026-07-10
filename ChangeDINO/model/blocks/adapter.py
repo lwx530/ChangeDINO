@@ -96,13 +96,6 @@ def apply_bottleneck_adapter_to_dinov3(dinov3_model, target_layers, dim=1024, bo
                 blocks[i].mlp = SequentialMLPAdapterWrapper(blocks[i].mlp, dim, bottleneck_dim)
     return dinov3_model
 
-def sal_guide(feature, sal, number):
-    feature_list = torch.chunk(feature, number, dim=1)
-    out = torch.cat((feature_list[0], sal), dim=1)
-    for i in range(1, number):
-        out = torch.cat((out, feature_list[i], sal), dim=1)
-    return out
-
 class PreBlockAdapter(nn.Module):
     def __init__(self, blk):
         super().__init__()
@@ -127,7 +120,7 @@ class DINOV3Wrapper(nn.Module):
     def __init__(
         self,
         weights_path="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
-        extract_ids=[5, 11, 17, 23],
+        extract_ids=list(range(24)),
         device="cuda",
     ):
         super().__init__()
@@ -151,12 +144,17 @@ class DINOV3Wrapper(nn.Module):
 
         target_layers = [6, 8, 10, 12, 14, 16, 18, 20]
 
-        blocks = self.model.blocks
-        for i in target_layers:
-            blocks[i] = PreBlockAdapter(blocks[i])
+        apply_bottleneck_adapter_to_dinov3(
+            self.model,
+            target_layers=target_layers,
+            dim=1024,
+            bottleneck_dim=64,  # 你可以根据显存调整，通常 64 或 128
+            use_attn=True,  # Attention 旁的并行 Adapter
+            use_mlp=True  # MLP 后的串联 Adapter (解答你的第二个问题)
+        )
 
         for name, p in self.model.named_parameters():
-            if "prompt_learn" in name:
+            if "adapter" in name:
                 p.requires_grad = True
 
     def forward(self, x):
@@ -171,15 +169,21 @@ class DINOV3Wrapper(nn.Module):
             feats_ = []
             for i in range(len(self.extract_ids)):
                 feats_.append(feats[self.extract_ids[i]])  # [B, N, C]
-        return feats_
+
+            feat = []
+            for i in range(4):
+                g = feats_[i * 6:(i + 1) * 6]
+                feat.append(torch.mean(torch.stack(g), dim=0))
+
+        return feat
 
 class LinearAdapter(nn.Module):
 
     def __init__(
             self,
-            in_dim=1024,  # DINOv3 ViT-L 的输出通道数
-            out_dim=256,  # 对齐到 fpn_channels * 2
-            sizes=(64, 32, 16, 8),  # 你的金字塔特征尺寸
+            in_dim=1024,
+            out_dim=128,
+            sizes=(64, 32, 16, 8),
     ):
         super().__init__()
         self.sizes = list(sizes)
@@ -187,8 +191,9 @@ class LinearAdapter(nn.Module):
         # 官方 Linear Head 做法：BN + 1x1 Conv 降维
         self.projs = nn.ModuleList([
             nn.Sequential(
-                nn.BatchNorm2d(in_dim),  # 官方习惯在投影前先对原始特征归一化
                 nn.Conv2d(in_dim, out_dim, kernel_size=1, bias=False),
+                nn.BatchNorm2d(out_dim),
+                nn.ReLU(inplace=True),
             ) for _ in self.sizes
         ])
         self.conv2 = nn.Sequential(
@@ -201,10 +206,9 @@ class LinearAdapter(nn.Module):
 
         outs = []
         for i, x in enumerate(feats):
-            # 1. 通道降维 1024 -> 256
+
             x_proj = self.projs[i](x)
 
-            # 2. 空间插值对齐到目标尺寸 (64, 32, 16, 8)
             x_aligned = F.interpolate(
                 x_proj,
                 size=(self.sizes[i], self.sizes[i]),
@@ -217,4 +221,12 @@ class LinearAdapter(nn.Module):
 
         return outs
 
+class ConvOut(nn.Module):
+    def __init__(self, in_channel):
+        super(ConvOut, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channel, 1, 3, stride=1, padding=1),
+        )
 
+    def forward(self, x):
+        return self.conv(x)

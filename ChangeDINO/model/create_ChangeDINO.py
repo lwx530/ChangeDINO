@@ -10,8 +10,8 @@ from .loss.dice import DICELoss
 from .loss.boundary import BoundaryLoss
 from .loss.hybrid_loss import HybridLoss
 
-def get_model(backbone_name="mobilenetv2", fpn_channels=128, n_layers=[1, 1, 1], **kwargs):
-    model = ChangeModel(backbone_name, fpn_channels, n_layers=n_layers, **kwargs)
+def get_model(**kwargs):
+    model = ChangeModel(**kwargs)
     # print(model)
     return model
 
@@ -37,8 +37,6 @@ class Model(nn.Module):
             n_layers=opt.n_layers,
             extract_ids=opt.extract_ids,
         )
-        # self.focal = FocalLoss(alpha=opt.alpha, gamma=opt.gamma)
-        # self.dice = DICELoss()
         self.hybrid_loss = HybridLoss()
         self.boundary_loss = BoundaryLoss()
 
@@ -53,35 +51,37 @@ class Model(nn.Module):
             self.load_ckpt(self.model, self.optimizer, opt.name, opt.backbone)
         self.model.cuda()
 
-        print("---------- Networks initialized -------------")
-
     def forward(self, x, label):
-        final_pred, coarse_preds, refined_preds, guided_preds, edge_mask = self.model(x)
+        pr5, pr6, pr7, pr8, p1, p2, p3, p4, edge1, edge2 = self.model(x)
 
-        # 主损失
-        loss = self.hybrid_loss(final_pred, label)
+        lr1 = self.hybrid_loss(pr5, label)
+        lr2 = self.hybrid_loss(pr6, label)
+        lr3 = self.hybrid_loss(pr7, label)
+        lr4 = self.hybrid_loss(pr8, label)
+        l1 = self.hybrid_loss(p1, label)
+        l2 = self.hybrid_loss(p2, label)
+        l3 = self.hybrid_loss(p3, label)
+        l4 = self.hybrid_loss(p4, label)
 
-        # DINO 粗预测辅助损失
-        for p in coarse_preds:
-            loss += 0.3 * self.hybrid_loss(p, label)
-
-        # CNN 细化辅助损失
-        for p in refined_preds:
-            loss += 0.5 * self.hybrid_loss(p, label)
-
-        # 反哺后预测辅助损失
-        for k, p in guided_preds.items():
-            loss += 0.3 * self.hybrid_loss(p, label)
-
-        edge_mask_up = F.interpolate(
-            edge_mask,
+        edge1_mask_up = F.interpolate(
+            edge1,
             size=label.shape[-2:],
             mode="bilinear",
             align_corners=False
         )
-        loss += self.boundary_loss(edge_mask_up, label) * 0.5
+        lb1 = self.boundary_loss(edge1_mask_up, label) * 0.5
 
-        return final_pred, loss
+        edge2_mask_up = F.interpolate(
+            edge2,
+            size=label.shape[-2:],
+            mode="bilinear",
+            align_corners=False
+        )
+        lb2 = self.boundary_loss(edge1_mask_up, label) * 0.5
+
+        loss = lr1 + lr2 + lr3 + lr4 + l1 + l2 + l3 + l4 + lb1 + lb2
+
+        return pr5, loss
 
     @torch.inference_mode()
     def inference(self, x):

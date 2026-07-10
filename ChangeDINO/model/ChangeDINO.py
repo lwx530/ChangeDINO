@@ -8,17 +8,13 @@ import numpy as np
 
 from .blocks.fpn import FPN, DsBnRelu
 from .blocks.cbam import CBAM
-from .blocks.adapter import DINOV3Wrapper, LinearAdapter,sal_guide
+from .blocks.adapter import DINOV3Wrapper, LinearAdapter, ConvOut
 from .blocks.diffatts import TransformerBlock
 from .blocks.refine import LearnableSoftMorph
 from .blocks.sfhm import SFHM
 from .backbone.mobilenetv2 import mobilenet_v2
 
 class SRFMaskGenerator(nn.Module):
-    """
-    SRF (Spatial Refinement) 掩码生成器
-    作用：从最浅层、物理边界最清晰的 CNN 特征中，提取出一个 0~1 的高清边界权重图。
-    """
     def __init__(self, in_channels=128):
         super().__init__()
 
@@ -64,129 +60,12 @@ class FuseGated(nn.Module):
         fused = x2 + g * x1
         return self.mix(fused)
 
-
-class Detector(nn.Module):
-    def __init__(
-            self,
-            fpn_channels=128,
-            n_layers=[1, 1, 1, 1],
-            num_classes=1,
-            **kwargs,
-    ):
-        super().__init__()
-        self.num_classes = num_classes
-
-        self.p5_to_p4 = FuseGated(fpn_channels)
-        self.p4_to_p3 = FuseGated(fpn_channels)
-        self.p3_to_p2 = FuseGated(fpn_channels)
-
-        self.tb5 = nn.Sequential(*[TransformerBlock(
-            dim=fpn_channels,
-            ffn_expansion_factor=2,
-            bias=False,
-            LayerNorm_type="BiasFree"
-        ) for _ in range(n_layers[0])])
-        self.tb4 = nn.Sequential(*[TransformerBlock(
-            dim=fpn_channels,
-            ffn_expansion_factor=2,
-            bias=False,
-            LayerNorm_type="BiasFree"
-        ) for _ in range(n_layers[1])])
-        self.tb3 = nn.Sequential(*[TransformerBlock(
-            dim=fpn_channels,
-            ffn_expansion_factor=2,
-            bias=False,
-            LayerNorm_type="BiasFree"
-        ) for _ in range(n_layers[2])])
-        self.tb2 = nn.Sequential(*[TransformerBlock(
-            dim=fpn_channels,
-            ffn_expansion_factor=2,
-            bias=False,
-            LayerNorm_type="BiasFree"
-        ) for _ in range(n_layers[3])])
-
-        # 4 个分类头
-        self.p5_head = nn.Conv2d(fpn_channels, num_classes, 1)
-        self.p4_head = nn.Conv2d(fpn_channels, num_classes, 1)
-        self.p3_head = nn.Conv2d(fpn_channels, num_classes, 1)
-        self.p2_head = nn.Conv2d(fpn_channels, num_classes, 1)
-
-        # 受 sal_guide 后的分类头 (通道数变化: C+number)
-        self.p4_head_g = nn.Conv2d(fpn_channels + 1, num_classes, 1)
-        self.p3_head_g = nn.Conv2d(fpn_channels + 2, num_classes, 1)
-        self.p2_head_g = nn.Conv2d(fpn_channels + 3, num_classes, 1)
-
-    def _up(self, x):
-        return F.interpolate(x, size=(256, 256), mode="bilinear", align_corners=False)
-
-    def forward_features(self, xs):
-        fea_p2, fea_p3, fea_p4, fea_p5 = xs
-        fea_p5 = self.tb5(fea_p5)
-        fea_p4 = self.p5_to_p4(fea_p5, fea_p4)
-        fea_p4 = self.tb4(fea_p4)
-        fea_p3 = self.p4_to_p3(fea_p4, fea_p3)
-        fea_p3 = self.tb3(fea_p3)
-        fea_p2 = self.p3_to_p2(fea_p3, fea_p2)
-        fea_p2 = self.tb2(fea_p2)
-        return (fea_p2, fea_p3, fea_p4, fea_p5)  # 都是 [B,128,H,W]
-
-    def forward_heads(self, fea_p2, fea_p3, fea_p4, fea_p5, sal_guides=None):
-        # 正常预测
-        pred_p5 = self.p5_head(fea_p5)
-        pred_p4 = self.p4_head(fea_p4)
-        pred_p3 = self.p3_head(fea_p3)
-        pred_p2 = self.p2_head(fea_p2)
-
-        # 受 sal_guide 的预测
-        guided = {}
-        if sal_guides is not None:
-            d2_g, d3_g, d4_g = sal_guides
-            if d4_g is not None:
-                fea_p4_g = sal_guide(fea_p4, d4_g, 1)
-                guided['p4'] = self.p4_head_g(fea_p4_g)
-            if d3_g is not None:
-                fea_p3_g = sal_guide(fea_p3, d3_g, 2)
-                guided['p3'] = self.p3_head_g(fea_p3_g)
-            if d2_g is not None:
-                fea_p2_g = sal_guide(fea_p2, d2_g, 3)
-                guided['p2'] = self.p2_head_g(fea_p2_g)
-
-        preds = (self._up(pred_p2), self._up(pred_p3),
-                 self._up(pred_p4), self._up(pred_p5))
-        guided = {k: self._up(v) for k, v in guided.items()}
-        return preds, guided
-
-    def forward(self, xs):
-        feats = self.forward_features(xs)
-        preds, _ = self.forward_heads(*feats, sal_guides=None)
-        return preds
-
-class TwoStageModel(nn.Module):
-    def __init__(self, backbone="mobilenetv2", fpn_channels=128,
-                 n_layers=[1,1,1,1], **kwargs):
-        super().__init__()
-
-        # === Stage 1: DINOv3 粗定位 ===
-        self.dino = DINOV3Wrapper(
-            weights_path=kwargs.get("dino_weight", "dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"),
-            device="cuda",
-            extract_ids=kwargs.get("extract_ids", list(range(24))),
-        )
-        self.defect_adapter = LinearAdapter(
-            in_dim=1024, out_dim=fpn_channels * 2, sizes=(64, 32, 16, 8)
-        )
-        self.proj_256to128 = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(fpn_channels * 2, fpn_channels, 1, bias=False),
-                nn.BatchNorm2d(fpn_channels),
-                nn.ReLU(inplace=True),
-            ) for _ in range(4)
-        ])
-        self.detector_dino = Detector(
-            fpn_channels=fpn_channels, n_layers=n_layers, num_classes=1
-        )
-
-        # === Stage 2: MobileNetV2 局部细化 ===
+class MobileNetv2(nn.Module):
+    def __init__(self,
+                 backbone="mobilenetv2",
+                 fpn_channels=128,
+                 **kwargs):
+        super(MobileNetv2, self).__init__()
         self.backbone = get_backbone(backbone)
         self.fpn = FPN(
             in_channels=self.backbone.channels[-4:],
@@ -196,83 +75,223 @@ class TwoStageModel(nn.Module):
             beta_mode=kwargs.get("beta_mode", "contextgatedconv"),
         )
         self.sfhm = nn.ModuleList([SFHM(fpn_channels) for _ in range(4)])
-        self.detector_mobile = Detector(
-            fpn_channels=fpn_channels, n_layers=n_layers, num_classes=1
+        self.tb8 = TransformerBlock(
+            dim=fpn_channels,
+            ffn_expansion_factor=2,
+            bias=False,
+            LayerNorm_type="BiasFree")
+
+        self.tb7 = TransformerBlock(
+            dim=fpn_channels,
+            ffn_expansion_factor=2,
+            bias=False,
+            LayerNorm_type="BiasFree")
+
+        self.tb6 = TransformerBlock(
+            dim=fpn_channels,
+            ffn_expansion_factor=2,
+            bias=False,
+            LayerNorm_type="BiasFree")
+
+        self.tb5 = TransformerBlock(
+            dim=fpn_channels,
+            ffn_expansion_factor=2,
+            bias=False,
+            LayerNorm_type="BiasFree")
+
+        self.p8_to_p7 = FuseGated(fpn_channels)
+
+        self.p7_to_p6 = FuseGated(fpn_channels)
+
+        self.p6_to_p5 = FuseGated(fpn_channels)
+
+        self.p5head = ConvOut(128)
+
+        self.p6head = ConvOut(128 + 1)
+
+        self.p7head = ConvOut(128 + 1)
+
+        self.p8head = ConvOut(128 + 1)
+
+        self.srf = SRFMaskGenerator(fpn_channels)
+
+    def sal_guide(self, feature, sal, number):
+        feature_list = torch.chunk(feature, number, 1)
+        feature = torch.cat((feature_list[0], sal), 1)
+        for i in range(1, number):
+            feature = torch.cat((feature, feature_list[i], sal), 1)
+
+        return feature
+
+    def forward(self, x_raw, y1):
+        cnn_in = torch.cat([x_raw, y1], dim=1)
+        cnn_feats = self.backbone(cnn_in)
+        fpn_feats = self.fpn(cnn_feats[-4:])  # 4 × [B,128,64/32/16/8]
+        fea5, fea6, fea7, fea8 = [self.sfhm[i](fpn_feats[i]) for i in range(4)]
+
+        feap8 = self.tb8(fea8)
+        fea7 = self.p8_to_p7(feap8, fea7)
+
+        feap7 = self.tb7(fea7)
+        fea6 = self.p7_to_p6(feap7, fea6)
+
+        feap6 = self.tb6(fea6)       # 32×32
+        fea5 = self.p6_to_p5(feap6, fea5)
+
+        feap5 = self.tb5(fea5)
+
+        # SRF执行边缘增强
+        edge = self.srf(feap5)
+        feap5 = feap5 + feap5 * edge
+
+        out5 = self.p5head(feap5)  # 1，64×64   作为final_pred
+
+        avg_pool = nn.AdaptiveAvgPool2d(32)  # 尺寸下采样到32×32
+        out5_1 = avg_pool(out5)
+        feap6 = self.sal_guide(feap6, out5_1, 1)
+        out6 = self.p6head(feap6)
+
+        avg_pool = nn.AdaptiveAvgPool2d(16)  # 尺寸下采样到16×16
+        out5_2 = avg_pool(out5)
+        feap7 = self.sal_guide(feap7, out5_2, 1)
+        out7 = self.p7head(feap7)
+
+        avg_pool = nn.AdaptiveAvgPool2d(8)  # 尺寸下采样到8×8
+        out5_3 = avg_pool(out5)
+        feap8 = self.sal_guide(feap8, out5_3, 1)
+        out8 = self.p8head(feap8)
+
+        out5 = F.interpolate(out5, size=(256, 256), mode="bilinear", align_corners=False)
+        out6 = F.interpolate(out6, size=(256, 256), mode="bilinear", align_corners=False)
+        out7 = F.interpolate(out7, size=(256, 256), mode="bilinear", align_corners=False)
+        out8 = F.interpolate(out8, size=(256, 256), mode="bilinear", align_corners=False)
+
+        return out5, out6, out7, out8, edge
+
+class TwoStageModel(nn.Module):
+    def __init__(self,
+                 backbone="mobilenetv2",
+                 fpn_channels=128,
+                 dino_weight="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
+                 device="cuda",
+                 extract_ids=list(range(24)),
+                 **kwargs):
+        super().__init__()
+
+        # === Stage 1: DINOv3 粗定位 ===
+        self.encoder = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids)
+
+        self.defect_adapter = LinearAdapter(
+            in_dim=1024, out_dim=fpn_channels, sizes=(64, 32, 16, 8)
         )
-        self.proj_4to3 = nn.Conv2d(4, 3, kernel_size=3, stride=1, padding=1, bias=False)
-        # 初始化为均值权重
-        with torch.no_grad():
-            self.proj_4to3.weight[:, :3] = torch.eye(3).view(3, 3, 1, 1)  # 保持前3通道不变
-            self.proj_4to3.weight[:, 3:] = self.proj_4to3.weight[:, :3].mean(dim=1, keepdim=True) / 3  # 第4通道是前3的均值
+
+        self.tb4 = TransformerBlock(
+            dim=fpn_channels,
+            ffn_expansion_factor=2,
+            bias=False,
+            LayerNorm_type="BiasFree")
+
+        self.tb3 = TransformerBlock(
+            dim=fpn_channels,
+            ffn_expansion_factor=2,
+            bias=False,
+            LayerNorm_type="BiasFree")
+
+        self.tb2 = TransformerBlock(
+            dim=fpn_channels,
+            ffn_expansion_factor=2,
+            bias=False,
+            LayerNorm_type="BiasFree")
+
+        self.tb1 = TransformerBlock(
+            dim=fpn_channels,
+            ffn_expansion_factor=2,
+            bias=False,
+            LayerNorm_type="BiasFree")
+
+        self.p4_to_p3 = FuseGated(fpn_channels)
+
+        self.p3_to_p2 = FuseGated(fpn_channels)
+
+        self.p2_to_p1 = FuseGated(fpn_channels)
+
+        self.p4head = ConvOut(128+4)
+
+        self.p3head = ConvOut(128+2)
+
+        self.p2head = ConvOut(128+1)
+
+        self.p1head = ConvOut(128)
+
+        self.mobilenet = MobileNetv2()
 
         # === SRF 边缘增强 ===
         self.srf = SRFMaskGenerator(fpn_channels)
 
+    def sal_guide(self, feature, sal, number):
+        feature_list = torch.chunk(feature, number, 1)
+        feature = torch.cat((feature_list[0], sal), 1)
+        for i in range(1, number):
+            feature = torch.cat((feature, feature_list[i], sal), 1)
+
+        return feature
+
     def forward(self, x):
         # ========== Stage 1: DINOv3 ==========
-        raw_dino = self.dino(x)
-        ds_fea = []
-        for i in range(4):
-            g = raw_dino[i*6:(i+1)*6]
-            ds_fea.append(torch.mean(torch.stack(g), dim=0))
-        ds_fea = self.defect_adapter(ds_fea)           # 4 × [B,256,8/16/32/64]
-        dino_feats = [self.proj_256to128[i](ds_fea[i]) for i in range(4)]
+        feat = self.encoder(x)
 
-        # DINO 特征过 Detector（只走特征处理，不出预测）
-        dino_features = self.detector_dino.forward_features(dino_feats)
+        fea1, fea2, fea3, fea4 = self.defect_adapter(feat)
 
-        # 出粗预测
-        coarse_preds, _ = self.detector_dino.forward_heads(*dino_features, sal_guides=None)
-        coarse_main = coarse_preds[0]  # [B,1,256,256]
+        feap4 = self.tb4(fea4)      # 8,128,8×8
+        fea3 = self.p4_to_p3(feap4, fea3)
 
-        # ========== Stage 2: MobileNetV2 细化 ==========
-        cnn_in = torch.cat([x, coarse_main], dim=1)
-        cnn_feats = self.backbone(self.proj_4to3(cnn_in))
-        fpn_feats = self.fpn(cnn_feats[-4:])           # 4 × [B,128,64/32/16/8]
-        sfhm_feats = [self.sfhm[i](fpn_feats[i]) for i in range(4)]
+        feap3 = self.tb3(fea3)      # 8,128,16×16
+        fea2 = self.p3_to_p2(feap3, fea2)
 
-        # CNN 特征过 Detector
-        cnn_features = self.detector_mobile.forward_features(sfhm_feats)
-        refined_preds, _ = self.detector_mobile.forward_heads(*cnn_features, sal_guides=None)
-        refined_main = refined_preds[0]                 # [B,1,256,256]
+        feap2 = self.tb2(fea2)      # 8，128，32×32
+        fea1 = self.p2_to_p1(feap2, fea1)
 
-        # ========== SRF 边缘增强（在最大分辨率特征上） ==========
-        edge_mask = self.srf(cnn_features[0])           # cnn_features[0] = p2:[B,128,64,64]
-        edge_up = F.interpolate(edge_mask, size=(256, 256),
-                                mode='bilinear', align_corners=False)
+        feap1 = self.tb1(fea1)      # 8，128，64×64
 
-        # ========== Feedback: 细化结果反哺 DINO 解码器 ==========
-        sal_guides_dino = [
-            F.interpolate(refined_main, size=(64,64), mode='bilinear', align_corners=False),
-            F.interpolate(refined_main, size=(32,32), mode='bilinear', align_corners=False),
-            F.interpolate(refined_main, size=(16,16), mode='bilinear', align_corners=False),
-        ]
-        _, guided_preds = self.detector_dino.forward_heads(
-            *dino_features, sal_guides=sal_guides_dino
-        )
+        # SRF执行边缘增强
+        edge_mask2 = self.srf(feap1)
+        feap1 = feap1 + feap1*edge_mask2
 
-        # 最终预测 = 粗 + 细 + 受指导
-        final_pred = coarse_main + refined_main
-        for k in ['p2', 'p3', 'p4']:
-            if k in guided_preds:
-                final_pred = final_pred + guided_preds[k]
-        final_pred = final_pred * (1.0 + edge_up * 0.3)
+        out1 = self.p1head(feap1)   # 8, 1, 64×64
+        out1 = F.interpolate(out1, size=(256, 256), mode="bilinear", align_corners=False)
 
-        return final_pred, coarse_preds, refined_preds, guided_preds, edge_mask
+        outr5, outr6, outr7, outr8, edge_mask1 = self.mobilenet(x, out1)
+
+        avg_pool = nn.AdaptiveAvgPool2d(32)  # 尺寸下采样到32×32
+        outr5_1 = avg_pool(outr5)
+        feap2 = self.sal_guide(feap2, outr5_1, 1)
+        out2 = self.p2head(feap2)
+
+        avg_pool = nn.AdaptiveAvgPool2d(16)  # 尺寸下采样到16×16
+        outr5_2 = avg_pool(outr5)
+        feap3 = self.sal_guide(feap3, outr5_2, 2)
+        out3 = self.p3head(feap3)
+
+        avg_pool = nn.AdaptiveAvgPool2d(8)  # 尺寸下采样到8×8
+        outr5_3 = avg_pool(outr5)
+        feap4 = self.sal_guide(feap4, outr5_3, 4)
+        out4 = self.p4head(feap4)
+
+        out2 = F.interpolate(out2, size=(256, 256), mode="bilinear", align_corners=False)
+        out3 = F.interpolate(out3, size=(256, 256), mode="bilinear", align_corners=False)
+        out4 = F.interpolate(out4, size=(256, 256), mode="bilinear", align_corners=False)
+
+        return outr5, outr6, outr7, outr8, out1, out2, out3, out4, edge_mask1, edge_mask2
 
     @torch.inference_mode()
     def _forward(self, x):
-        final_pred, _, _, _, _ = self.forward(x)
+        final_pred, _, _, _, _, _, _, _, _, _ = self.forward(x)
         return final_pred
 
 class ChangeModel(nn.Module):
-    def __init__(self, backbone="mobilenetv2", fpn_channels=128,
-                 n_layers=[1,1,1,1], **kwargs):
+    def __init__(self, **kwargs):
         super().__init__()
-        self.model = TwoStageModel(
-            backbone=backbone, fpn_channels=fpn_channels,
-            n_layers=n_layers, **kwargs
-        )
+        self.model = TwoStageModel(**kwargs)
 
     def forward(self, x):
         return self.model(x)
