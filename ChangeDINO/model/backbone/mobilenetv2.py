@@ -94,12 +94,13 @@ class MobileNetV2(nn.Module):
         input_channel = int(input_channel * width_mult)
         self.last_channel = int(last_channel * max(1.0, width_mult))
         # features = [ConvBNReLU(3, input_channel, stride=2)]
-        custom_stem = nn.Sequential(
+        '''custom_stem = nn.Sequential(
             nn.Conv2d(4, input_channel, kernel_size=3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(input_channel),
             nn.ReLU6(inplace=True)
         )
-        features = [custom_stem]
+        features = [custom_stem]'''
+        features = [ConvBNReLU(3, input_channel, stride=2)]
         # building inverted residual blocks
         for t, c, n, s, d in inverted_residual_setting:
             output_channel = int(c * width_mult)
@@ -154,9 +155,9 @@ def mobilenet_v2(
             model_urls["mobilenet_v2"], progress=progress
         )
         print("loading imagenet pretrained mobilenetv2")
-        keys_to_delete = [key for key in state_dict.keys() if key.startswith("features.0.")]
+        '''keys_to_delete = [key for key in state_dict.keys() if key.startswith("features.0.")]
         for key in keys_to_delete:
-            del state_dict[key]
+            del state_dict[key]'''
         model.load_state_dict(state_dict, strict=False)
         print("loaded imagenet pretrained mobilenetv2")
     return model

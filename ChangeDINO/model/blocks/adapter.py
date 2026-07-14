@@ -83,6 +83,31 @@ class SequentialMLPAdapterWrapper(nn.Module):
 
         return [m + adp for m, adp in zip(mlp_out_list, adp_out_list)]
 
+class ParallelMLPAdapterWrapper(nn.Module):
+    """将 Adapter 与 MLP 并行"""
+
+    def __init__(self, mlp_module, in_dim, bottleneck_dim):
+        super().__init__()
+        self.mlp_module = mlp_module
+        self.adapter = BottleneckAdapter(in_dim, bottleneck_dim)
+
+    def forward(self, x):
+        # MLP 和 Adapter 并行处理相同的输入 x
+        mlp_out = self.mlp_module(x)
+        adp_out = self.adapter(x)
+        return mlp_out + adp_out
+
+    def forward_list(self, x_list):
+        """兼容 DINOv3 内部特有的列表前向传播机制"""
+        mlp_out_list = self.mlp_module.forward_list(x_list)
+
+        # 注意：这里传入的是 x_list，而不是 mlp_out_list
+        x_flat, shapes, num_tokens = cat_keep_shapes(x_list)
+        adp_flat = self.adapter(x_flat)
+        adp_out_list = uncat_with_shapes(adp_flat, shapes, num_tokens)
+
+        return [m + adp for m, adp in zip(mlp_out_list, adp_out_list)]
+
 
 def apply_bottleneck_adapter_to_dinov3(dinov3_model, target_layers, dim=1024, bottleneck_dim=64, use_attn=True,
                                        use_mlp=False):
@@ -93,7 +118,8 @@ def apply_bottleneck_adapter_to_dinov3(dinov3_model, target_layers, dim=1024, bo
             if use_attn:
                 blocks[i].attn = ParallelAttnAdapterWrapper(blocks[i].attn, dim, bottleneck_dim)
             if use_mlp:
-                blocks[i].mlp = SequentialMLPAdapterWrapper(blocks[i].mlp, dim, bottleneck_dim)
+                # blocks[i].mlp = SequentialMLPAdapterWrapper(blocks[i].mlp, dim, bottleneck_dim)
+                blocks[i].mlp = ParallelMLPAdapterWrapper(blocks[i].mlp, dim, bottleneck_dim)
     return dinov3_model
 
 class PreBlockAdapter(nn.Module):
@@ -149,8 +175,8 @@ class DINOV3Wrapper(nn.Module):
             target_layers=target_layers,
             dim=1024,
             bottleneck_dim=64,  # 你可以根据显存调整，通常 64 或 128
-            use_attn=True,  # Attention 旁的并行 Adapter
-            use_mlp=True  # MLP 后的串联 Adapter (解答你的第二个问题)
+            use_attn=True,
+            use_mlp=True
         )
 
         for name, p in self.model.named_parameters():
@@ -170,19 +196,14 @@ class DINOV3Wrapper(nn.Module):
             for i in range(len(self.extract_ids)):
                 feats_.append(feats[self.extract_ids[i]])  # [B, N, C]
 
-            feat = []
-            for i in range(4):
-                g = feats_[i * 6:(i + 1) * 6]
-                feat.append(torch.mean(torch.stack(g), dim=0))
-
-        return feat
+        return feats
 
 class LinearAdapter(nn.Module):
 
     def __init__(
             self,
             in_dim=1024,
-            out_dim=128,
+            out_dim=256,
             sizes=(64, 32, 16, 8),
     ):
         super().__init__()

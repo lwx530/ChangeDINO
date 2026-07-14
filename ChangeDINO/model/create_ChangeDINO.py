@@ -52,36 +52,23 @@ class Model(nn.Module):
         self.model.cuda()
 
     def forward(self, x, label):
-        pr5, pr6, pr7, pr8, p1, p2, p3, p4, edge1, edge2 = self.model(x)
+        final_pred, preds, edge_mask = self.model(x)
+        label = label.long()
+        hybrid = self.hybrid_loss(final_pred, label)
+        for p in preds:
+            hybrid += 0.5 * self.hybrid_loss(p, label)
 
-        lr1 = self.hybrid_loss(pr5, label)
-        lr2 = self.hybrid_loss(pr6, label)
-        lr3 = self.hybrid_loss(pr7, label)
-        lr4 = self.hybrid_loss(pr8, label)
-        l1 = self.hybrid_loss(p1, label)
-        l2 = self.hybrid_loss(p2, label)
-        l3 = self.hybrid_loss(p3, label)
-        l4 = self.hybrid_loss(p4, label)
-
-        edge1_mask_up = F.interpolate(
-            edge1,
-            size=label.shape[-2:],
+        edge_mask_up = F.interpolate(
+            edge_mask,
+            size=label.shape[-2:],  # 获取 label 的 H, W
             mode="bilinear",
             align_corners=False
         )
-        lb1 = self.boundary_loss(edge1_mask_up, label) * 0.5
+        boundary = self.boundary_loss(edge_mask_up, label)
 
-        edge2_mask_up = F.interpolate(
-            edge2,
-            size=label.shape[-2:],
-            mode="bilinear",
-            align_corners=False
-        )
-        lb2 = self.boundary_loss(edge1_mask_up, label) * 0.5
+        loss = hybrid + 0.5 * boundary
 
-        loss = lr1 + lr2 + lr3 + lr4 + l1 + l2 + l3 + l4 + lb1 + lb2
-
-        return pr5, loss
+        return final_pred, loss
 
     @torch.inference_mode()
     def inference(self, x):
