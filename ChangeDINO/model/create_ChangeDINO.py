@@ -52,11 +52,12 @@ class Model(nn.Module):
         self.model.cuda()
 
     def forward(self, x, label):
-        final_pred, preds, edge_mask = self.model(x)
+        pred1, pred2, pred3, pred4, edge_mask = self.model(x)
         label = label.long()
-        hybrid = self.hybrid_loss(final_pred, label)
-        for p in preds:
-            hybrid += 0.5 * self.hybrid_loss(p, label)
+        loss1 = self.hybrid_loss(pred1, label)
+        loss2 = self.hybrid_loss(pred2, label)
+        loss3 = self.hybrid_loss(pred3, label)
+        loss4 = self.hybrid_loss(pred4, label)
 
         edge_mask_up = F.interpolate(
             edge_mask,
@@ -66,9 +67,11 @@ class Model(nn.Module):
         )
         boundary = self.boundary_loss(edge_mask_up, label)
 
+        hybrid = loss1 + 0.5 * (loss2 + loss3 + loss4)
+
         loss = hybrid + 0.5 * boundary
 
-        return final_pred, loss
+        return pred1, loss
 
     @torch.inference_mode()
     def inference(self, x):
@@ -104,6 +107,32 @@ class Model(nn.Module):
 
     def save(self, model_name, backbone):
         self.save_ckpt(self.model, self.optimizer, model_name, backbone)
+
+    def save_latest(self, epoch, previous_best):
+        save_path = os.path.join(self.save_dir, 'latest.pth')
+        torch.save({
+            'epoch': epoch,
+            'previous_best': previous_best,
+            'network': self.model.cpu().state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+            'scheduler': self.schedular.state_dict(),
+        }, save_path)
+        if torch.cuda.is_available():
+            self.model.cuda()
+
+    def resume_latest(self):
+        save_path = os.path.join(self.save_dir, 'latest.pth')
+        if not os.path.isfile(save_path):
+            print('No latest checkpoint found, starting from scratch')
+            return 1, 0.0
+        checkpoint = torch.load(save_path, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(checkpoint['network'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        self.schedular.load_state_dict(checkpoint['scheduler'])
+        start_epoch = checkpoint['epoch'] + 1
+        previous_best = checkpoint.get('previous_best', 0.0)
+        print('Resumed from epoch %d, previous best = %.6f' % (checkpoint['epoch'], previous_best))
+        return start_epoch, previous_best
 
     def name(self):
         return self.opt.name

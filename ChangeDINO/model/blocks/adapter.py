@@ -204,7 +204,7 @@ class LinearAdapter(nn.Module):
             self,
             in_dim=1024,
             out_dim=256,
-            sizes=(64, 32, 16, 8),
+            sizes=(128, 64, 32, 16),
     ):
         super().__init__()
         self.sizes = list(sizes)

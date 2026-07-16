@@ -204,11 +204,14 @@ if __name__ == "__main__":
     opt = Options().parse()
     trainval = Trainval(opt)
     setup_seed(seed=1)
+    start_epoch = 1
+    if opt.resume:
+        start_epoch, trainval.previous_best = trainval.model.resume_latest()
 
     epoch_val = 60
 
     try:
-        for epoch in range(1, opt.num_epochs + 1):
+        for epoch in range(start_epoch, opt.num_epochs + 1):
             print(
                 "\n==> Name %s, Epoch %i, previous best = %.6f"
                 % (opt.name, epoch, trainval.previous_best)
@@ -223,10 +226,13 @@ if __name__ == "__main__":
             if epoch >= epoch_val:
                 test_scores = trainval.test(epoch)
                 trainval._append_log_line(epoch, train_stats, test_scores)
+                if epoch % 5 == 0:
+                    trainval.model.save_latest(epoch, trainval.previous_best)
             else:
                 trainval._append_log_line(epoch, train_stats, {"Message": "Skipped test"})
 
     finally:
+        trainval.model.save_latest(epoch, trainval.previous_best)
         pass
 
     print("Done!")

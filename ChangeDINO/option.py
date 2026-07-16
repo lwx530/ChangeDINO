@@ -8,9 +8,9 @@ class Options:
 
     def init(self):
         self.parser.add_argument(
-            "--gpu_ids", type=str, default="0", help="gpu ids: e.g. 0. use -1 for CPU"
+            "--gpu_ids", type=str, default="1", help="gpu ids: e.g. 0. use -1 for CPU"
         )
-        self.parser.add_argument("--name", type=str, default="ESDI-34")
+        self.parser.add_argument("--name", type=str, default="ESDI-35")
         self.parser.add_argument(
             "--dataroot", type=str, default="/home/linweixuan/ChangeDINO/datasets"
         )
@@ -51,6 +51,8 @@ class Options:
         self.parser.add_argument("--num_workers", type=int, default=4, help="#threads for loading data")
         self.parser.add_argument("--lr", type=float, default=1e-4)
         self.parser.add_argument("--weight_decay", type=float, default=5e-4)
+
+        self.parser.add_argument("--resume", action="store_true", help="resume from latest checkpoint")
 
     def parse(self):
         self.init()

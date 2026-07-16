@@ -29,6 +29,21 @@ class SRFMaskGenerator(nn.Module):
     def forward(self, x):
         return self.mask_gen(x)
 
+
+class GroupWeightFusion(nn.Module):
+    def __init__(self, num_groups=4, layers_per_group=6):
+        super().__init__()
+        self.weights = nn.Parameter(torch.ones(num_groups, layers_per_group))
+
+    def forward(self, all_feats):  # 24个特征
+        outs = []
+        for g in range(4):
+            group = all_feats[g * 6: (g + 1) * 6]  # 6个[B,N,C]
+            w = F.softmax(self.weights[g], dim=-1)  # 可学习权重
+            weighted = sum(group[i] * w[i] for i in range(6))
+            outs.append(weighted)
+        return outs  # 4个group
+
 def get_backbone(backbone_name):
     if backbone_name == "mobilenetv2":
         backbone = mobilenet_v2(pretrained=True, progress=True)
@@ -196,6 +211,8 @@ class Encoder(nn.Module):
         dense_out_dim = fpn_channels * 2
         self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids)
 
+        self.groupweight = GroupWeightFusion(num_groups=4, layers_per_group=6)
+
         self.defect_adapter = LinearAdapter(
             in_dim=1024,
             out_dim=dense_out_dim,  # 即 256
@@ -209,7 +226,7 @@ class Encoder(nn.Module):
             hidden_dim=dense_out_dim,
         )
 
-        self.srf_mask_gen = SRFMaskGenerator(in_channels=fpn_channels)
+        # self.srf_mask_gen = SRFMaskGenerator(in_channels=fpn_channels)
 
         self.fusion_projs = nn.ModuleList([
             nn.Sequential(
@@ -237,16 +254,18 @@ class Encoder(nn.Module):
     def forward(self, x):
 
         fea = self.backbone.forward(x)
-        fea = self.fpn(fea[-4:])    # channel：128  size:8,16,32,64
+        fea = self.fpn(fea[-4:])    # channel：128  size:64,32,16,8
 
         raw_ds_fea = self.dino(x)  # 获取24层
 
-        ds_fea = []
+        '''ds_fea = []
         for i in range(4):
             # 取出当前层的 6 个特征图
             group_feats = raw_ds_fea[i * 6: (i + 1) * 6]
             group_mean_feat = torch.mean(torch.stack(group_feats, dim=0), dim=0)
-            ds_fea.append(group_mean_feat)
+            ds_fea.append(group_mean_feat)'''
+
+        ds_fea = self.groupweight(raw_ds_fea)
 
         ds_fea_adapted = self.defect_adapter(ds_fea)
 
@@ -260,12 +279,14 @@ class Encoder(nn.Module):
 
         final_fea = self.pff(enhanced_feas, ds_fea_adapted)
 
-        x1, x2, x3, x4 = final_fea
+        '''x1, x2, x3, x4 = final_fea
         edge_mask = self.srf_mask_gen(x1)
 
         x1_sharpened = x1 * (1.0 + edge_mask)
 
-        return (x1_sharpened, x2, x3, x4), edge_mask
+        return (x1_sharpened, x2, x3, x4), edge_mask'''
+
+        return final_fea
 
 
 class FuseGated(nn.Module):
@@ -325,6 +346,8 @@ class Detector(nn.Module):
             bias=False,
             LayerNorm_type="BiasFree")
 
+        self.srf_mask_gen = SRFMaskGenerator(in_channels=fpn_channels)
+
         self.p4_head = ConvOut(128)
         self.p3_head = ConvOut(128)
         self.p2_head = ConvOut(128)
@@ -332,25 +355,38 @@ class Detector(nn.Module):
 
     def forward(self, xs):
 
-        fea_p1, fea_p2, fea_p3, fea_p4 = xs
+        fea1, fea2, fea3, fea4 = xs
 
         # 从最深层的p4开始
-        fea_p4 = self.tb4(fea_p4)
-        pred_p4 = self.p4_head(fea_p4)
+        fea4 = self.tb4(fea4)
 
         # p5特征融合到p3
-        fea_p3 = self.p4_to_p3(fea_p4, fea_p3)
-        fea_p3 = self.tb3(fea_p3)
-        pred_p3 = self.p3_head(fea_p3)
+        fea3 = self.p4_to_p3(fea4, fea3)
+        fea3 = self.tb3(fea3)
 
         # p4特征融合到p2
-        fea_p2 = self.p3_to_p2(fea_p3, fea_p2)
-        fea_p2 = self.tb2(fea_p2)
-        pred_p2 = self.p2_head(fea_p2)
+        fea2 = self.p3_to_p2(fea3, fea2)
+        fea2 = self.tb2(fea2)
 
         # p3特征融合到p1
-        fea_p1 = self.p2_to_p1(fea_p2, fea_p1)
-        fea_p1 = self.tb1(fea_p1)
+        fea1 = self.p2_to_p1(fea2, fea1)
+        fea1 = self.tb1(fea1)
+
+        edge_mask = self.srf_mask_gen(fea1)              # B,1,128,128
+        fea_p1 = fea1 * (1.0 + edge_mask)
+
+        edge_p2 = F.interpolate(edge_mask, (32, 32), mode='bilinear')
+        fea_p2 = fea2 * (1.0 + edge_p2)  # 64×64
+
+        edge_p3 = F.interpolate(edge_mask, (16, 16), mode='bilinear')
+        fea_p3 = fea3 * (1.0 + edge_p3)  # 32×32
+
+        edge_p4 = F.interpolate(edge_mask, (8, 8), mode='bilinear')
+        fea_p4 = fea4 * (1.0 + edge_p4)
+
+        pred_p4 = self.p4_head(fea_p4)
+        pred_p3 = self.p3_head(fea_p3)
+        pred_p2 = self.p2_head(fea_p2)
         pred_p1 = self.p1_head(fea_p1)
 
         # 3. 上采样到统一尺寸
@@ -367,7 +403,7 @@ class Detector(nn.Module):
             pred_p4, size=(256, 256), mode="bilinear", align_corners=False
         )
 
-        return pred_p1, pred_p2, pred_p3, pred_p4
+        return pred_p1, pred_p2, pred_p3, pred_p4, edge_mask
 
 
 class ChangeModel(nn.Module):
@@ -375,22 +411,22 @@ class ChangeModel(nn.Module):
         super().__init__()
         self.encoder = Encoder(backbone=backbone, fpn_channels=fpn_channels, **kwargs)
         self.detector = Detector(fpn_channels=fpn_channels, **kwargs)
-        self.refiner = LearnableSoftMorph(1, 9)
+        # self.refiner = LearnableSoftMorph(1, 9)
 
     @torch.inference_mode()
     def _forward(self, x):
         # for inference
-        fea, edge_mask = self.encoder(x)
-        pred, _, _, _ = self.detector(fea)
-        pred = self.refiner(pred)
+        fea = self.encoder(x)
+        pred, _, _, _, _ = self.detector(fea)
+        # pred = self.refiner(pred)
         return pred
 
     def forward(self, x):
         # for training
-        fea, edge_mask = self.encoder(x)
-        preds = self.detector(fea)
-        final_pred = self.refiner(preds[0])
-        return final_pred, preds, edge_mask  # pred, pred_p2, pred_p3, pred_p4, pred_p5
+        fea = self.encoder(x)
+        pred1, pred2, pred3, pred4, edge_mask = self.detector(fea)
+        # final_pred = self.refiner(preds[0])
+        return pred1, pred2, pred3, pred4, edge_mask  # pred, pred_p2, pred_p3, pred_p4, pred_p5
 
 
 '''class FuseGated(nn.Module):

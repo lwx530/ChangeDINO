@@ -5,7 +5,7 @@ import torchvision.utils as vutils
 import os
 
 
-'''class BoundaryLoss(nn.Module):
+class BoundaryLoss(nn.Module):
     """
     基于空间梯度的边界损失 (Gradient-based Boundary Loss)
     完美复刻 MATLAB 的 gradient(gt) 逻辑，专治 1 像素极细划痕！
@@ -13,7 +13,7 @@ import os
 
     def __init__(self):
         super(BoundaryLoss, self).__init__()
-        self.has_saved_debug = True
+        # self.has_saved_debug = True
 
         # 定义计算 x 方向梯度 (gx) 的 Sobel 卷积核
         sobel_x = torch.tensor([[-1., 0., 1.],
@@ -49,21 +49,21 @@ import os
         target_boundary = (temp_edge > 0).float()
 
         # ==================== 可视化截流代码 ====================
-        if not self.has_saved_debug:
+        '''if not self.has_saved_debug:
             os.makedirs('debug_edge_1', exist_ok=True)
             vutils.save_image(target[:8], 'debug_edge_1/1_original_gt.png', normalize=True)
             # 保存这种新方法生成的边缘 GT
             vutils.save_image(target_boundary[:8], 'debug_edge_1/2_gradient_edge_gt.png', normalize=True)
             print("\n📸 [Debug] 梯度法边缘 GT 截获成功！快去对比看看它和之前的形态学边缘有什么区别！")
-            self.has_saved_debug = True
+            self.has_saved_debug = True'''
         # ==============================================================
 
         # 让 SRF 模块逼近这个完美清晰的梯度边缘
         loss = F.mse_loss(pred, target_boundary)
 
-        return loss'''
+        return loss
 
-class BoundaryLoss(nn.Module):
+'''class BoundaryLoss(nn.Module):
     """
         可导形态学边界损失 (Differentiable Morphological Boundary Loss)
         无需 numpy 转换，全 GPU 加速，梯度完美回传，数值严格在 0~1 之间。
@@ -93,4 +93,4 @@ class BoundaryLoss(nn.Module):
         # 此时 pred 和 target_boundary 都在 0~1 之间，MSE 算出来一般只有 0.0x 到 0.x
         loss = F.mse_loss(pred, target_boundary)
 
-        return loss
+        return loss'''
