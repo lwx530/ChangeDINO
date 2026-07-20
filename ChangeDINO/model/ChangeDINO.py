@@ -6,7 +6,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .blocks.fpn import FPN, DsBnRelu
+# from .blocks.fpn import FPN, DsBnRelu
 from .blocks.cbam import CBAM
 from .blocks.adapter import DINOV3Wrapper, LinearAdapter, ConvOut
 from .blocks.diffatts import TransformerBlock
@@ -28,6 +28,25 @@ class SRFMaskGenerator(nn.Module):
 
     def forward(self, x):
         return self.mask_gen(x)
+
+
+class DsBnRelu(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, dilation=1):
+        super(DsBnRelu, self).__init__()
+        self.kernel_size = kernel_size
+        self.depthwise = nn.Conv2d(in_channels, in_channels, kernel_size, stride, padding,
+                                   dilation, groups=in_channels, bias=False)
+        self.pointwise = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(True)
+
+    def forward(self, x):
+        if self.kernel_size != 1:
+            x = self.depthwise(x)
+        x = self.pointwise(x)
+        x = self.bn(x)
+        x = self.relu(x)
+        return x
 
 
 class GroupWeightFusion(nn.Module):
@@ -201,13 +220,21 @@ class Encoder(nn.Module):
         super().__init__()
         self.backbone_name = backbone
         self.backbone = get_backbone(backbone)
-        self.fpn = FPN(
+        self.backbone_channels = self.backbone.channels
+        self.cnn_proj = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(self.backbone_channels[-(i + 1)], fpn_channels, kernel_size=1, bias=False),
+                nn.BatchNorm2d(fpn_channels),
+                nn.ReLU(inplace=True),
+            ) for i in range(4)
+        ])
+        '''self.fpn = FPN(
             in_channels=self.backbone.channels[-4:],
             out_channels=fpn_channels,
             deform_groups=deform_groups,
             gamma_mode=gamma_mode,
             beta_mode=beta_mode,
-        )
+        )'''
         dense_out_dim = fpn_channels * 2
         self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids)
 
@@ -254,7 +281,8 @@ class Encoder(nn.Module):
     def forward(self, x):
 
         fea = self.backbone.forward(x)
-        fea = self.fpn(fea[-4:])    # channel：128  size:64,32,16,8
+        # fea = self.fpn(fea[-4:])    # channel：128  size:64,32,16,8
+        fea = [self.cnn_proj[3-i](fea[-(4-i)]) for i in range(4)]
 
         raw_ds_fea = self.dino(x)  # 获取24层
 

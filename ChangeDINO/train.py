@@ -192,7 +192,7 @@ class Trainval(object):
             print(message)
 
         # 这里你用的是 wFmeasure 作为最佳模型的判断标准，也可以换成和 WPFormer 一样的 Smeasure
-        current_score = test_scores.get('Smeasure', 0.0)
+        current_score = test_scores.get('wFmeasure', 0.0)
         if current_score >= self.previous_best:
             self.model.save(self.opt.name, self.opt.backbone)
             self.previous_best = current_score

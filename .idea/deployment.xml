@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="linweixuan@125.123.73.99:22162 key" remoteFilesAllowedToDisappearOnAutoupload="false">
+  <component name="PublishConfigData" autoUpload="Always" serverName="root@connect.nmb1.seetacloud.com:22940 password" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
       <paths name="linweixuan@125.123.73.99:22162 key">
         <serverdata>
@@ -30,108 +30,10 @@
           </mappings>
         </serverdata>
       </paths>
-      <paths name="linweixuan@orangyzc.cn:22162 key">
+      <paths name="root@connect.nmb1.seetacloud.com:22940 password">
         <serverdata>
           <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="linweixuan@orangyzc.cn:22162 key (2)">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="linweixuan@orangyzc.cn:22162 key (3)">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="linweixuan@orangyzc.cn:22162 key (4)">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="linweixuan@orangyzc.cn:22162 key (5)">
-        <serverdata>
-          <mappings>
-            <mapping deploy="" local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="linweixuan@orangyzc.cn:22162 key (6)">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="linweixuan@orangyzc.cn:22164 key">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="linweixuan@orangyzc.cn:22164 key (2)">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="linweixuan@orangyzc.cn:22164 key (3)">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="linweixuan@orangyzc.cn:22164 key (4)">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="linweixuan@orangyzc.cn:22164 key (5)">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="linweixuan@orangyzc.cn:22164 key (6)">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="linweixuan@orangyzc.cn:22164 key (7)">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="linweixuan@orangyzc.cn:22164 key (8)">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="linweixuan@orangyzc.cn:22164 key (9)">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
+            <mapping deploy="/root/autodl-tmp" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>

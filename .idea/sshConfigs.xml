@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="SshConfigs">
+    <configs>
+      <sshConfig authType="PASSWORD" connectionConfig="{&quot;serverAliveInterval&quot;:300}" id="eea22ed4-324b-4cb8-a04f-17c897f8a0cb" port="22" customName="autodl" nameFormat="CUSTOM" useOpenSSHConfig="true">
+        <option name="customName" value="autodl" />
+      </sshConfig>
+    </configs>
+  </component>
+</project>

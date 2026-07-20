@@ -8,11 +8,14 @@ class Options:
 
     def init(self):
         self.parser.add_argument(
-            "--gpu_ids", type=str, default="1", help="gpu ids: e.g. 0. use -1 for CPU"
+            "--gpu_ids", type=str, default="0", help="gpu ids: e.g. 0. use -1 for CPU"
         )
         self.parser.add_argument("--name", type=str, default="ESDI-35")
-        self.parser.add_argument(
+        '''self.parser.add_argument(
             "--dataroot", type=str, default="/home/linweixuan/ChangeDINO/datasets"
+        )'''
+        self.parser.add_argument(
+            "--dataroot", type=str, default="/root/autodl-tmp/ChangeDINO/datasets"
         )
         self.parser.add_argument("--dataset", type=str, default="ESDIs-SOD")
         self.parser.add_argument(
