@@ -10,7 +10,7 @@ class Options:
         self.parser.add_argument(
             "--gpu_ids", type=str, default="0", help="gpu ids: e.g. 0. use -1 for CPU"
         )
-        self.parser.add_argument("--name", type=str, default="ESDI-35")
+        self.parser.add_argument("--name", type=str, default="ESDI-36")
         '''self.parser.add_argument(
             "--dataroot", type=str, default="/home/linweixuan/ChangeDINO/datasets"
         )'''
@@ -38,7 +38,7 @@ class Options:
         self.parser.add_argument("--use_morph", action='store_true')
 
         self.parser.add_argument("--phase", type=str, default="train")
-        self.parser.add_argument("--backbone", type=str, default="mobilenetv2")
+        self.parser.add_argument("--backbone", type=str, default="resnet34")
         self.parser.add_argument("--fpn", type=str, default="fpn")
         self.parser.add_argument("--fpn_channels", type=int, default=128)
         self.parser.add_argument("--deform_groups", type=int, default=4)
