@@ -262,18 +262,8 @@ class Encoder(nn.Module):
             hidden_dim=dense_out_dim,
         )
 
-        # self.srf_mask_gen = SRFMaskGenerator(in_channels=fpn_channels)
-
-        self.fusion_projs = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(fpn_channels + dense_out_dim, fpn_channels, kernel_size=1, bias=False),
-                nn.BatchNorm2d(fpn_channels),
-                nn.ReLU(inplace=True)
-            ) for _ in range(4)
-        ])
-
         # 实例化 4 个尺度的 SFHM 模块
-        self.sfhm_modules = nn.ModuleList([
+        '''self.sfhm_modules = nn.ModuleList([
             SFHM(in_dim=fpn_channels) for _ in range(4)
         ])
         # ===============================================================
@@ -285,7 +275,7 @@ class Encoder(nn.Module):
                 nn.Conv2d(dino_adapted_ch, 1, kernel_size=1, bias=True),
                 nn.Sigmoid()  # 压缩到 0~1 之间，作为概率权重
             ) for _ in range(4)
-        ])
+        ])'''
 
     def forward(self, x):
 
@@ -295,26 +285,19 @@ class Encoder(nn.Module):
 
         raw_ds_fea = self.dino(x)  # 获取24层
 
-        '''ds_fea = []
-        for i in range(4):
-            # 取出当前层的 6 个特征图
-            group_feats = raw_ds_fea[i * 6: (i + 1) * 6]
-            group_mean_feat = torch.mean(torch.stack(group_feats, dim=0), dim=0)
-            ds_fea.append(group_mean_feat)'''
-
         ds_fea = self.groupweight(raw_ds_fea)
 
         ds_fea_adapted = self.defect_adapter(ds_fea)
 
-        enhanced_feas = []
+        '''enhanced_feas = []
 
         for i in range(4):
             sfhm_out = self.sfhm_modules[i](fea[i])
             gate = self.dino_gates[i](ds_fea_adapted[i])
             gated_sfhm_out = sfhm_out * gate
-            enhanced_feas.append(gated_sfhm_out)
+            enhanced_feas.append(gated_sfhm_out)'''
 
-        final_fea = self.pff(enhanced_feas, ds_fea_adapted)
+        final_fea = self.pff(fea, ds_fea_adapted)
 
         return final_fea
 
