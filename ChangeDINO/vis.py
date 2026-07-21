@@ -73,10 +73,11 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     print("1. 正在加载模型架构...")
-    model = ChangeModel(backbone="mobilenetv2").to(device)
+    model = ChangeModel(backbone="resnet34").to(device)
 
     print("2. 正在加载训练好的权重...")
-    weight_path = "/home/linweixuan/ChangeDINO/checkpoints/ESDI-33/ESDI-33_mobilenetv2_best.pth"
+    # weight_path = "/home/linweixuan/ChangeDINO/checkpoints/ESDI-36/ESDI-36_resnet34_best.pth"
+    weight_path = "/root/autodl-tmp/ChangeDINO/checkpoints/ESDI-36/ESDI-36_resnet34_best.pth"
 
     if os.path.exists(weight_path):
         checkpoint = torch.load(weight_path, map_location=device)
@@ -98,53 +99,24 @@ def main():
         return hook
 
     # 将钩子挂载到模型内部的 dino 模块上
-    hook_handles.append(model.model.encoder.register_forward_hook(get_hook('1_dino')))
+    hook_handles.append(model.encoder.backbone.register_forward_hook(get_hook('1_resnet34')))
 
-    hook_handles.append(model.model.defect_adapter.register_forward_hook(get_hook('2_defect_adapter')))
+    hook_handles.append(model.encoder.dino.register_forward_hook(get_hook('2_dino')))
+    hook_handles.append(model.encoder.groupweight.register_forward_hook(get_hook('3_groupweight')))
+    hook_handles.append(model.encoder.defect_adapter.register_forward_hook(get_hook('4_defect_adapter')))
 
-    # hook_handles.append(model.model.defect_adapter.register_forward_hook(get_hook('3_defect_adapter')))
+    hook_handles.append(model.encoder.sfhm_modules[0].register_forward_hook(get_hook('5_SFHM0')))
 
-    hook_handles.append(model.model.tb4.register_forward_hook(get_hook('4_tb4')))
-    hook_handles.append(model.model.tb3.register_forward_hook(get_hook('5_tb3')))
-    hook_handles.append(model.model.tb2.register_forward_hook(get_hook('6_tb2')))
-    hook_handles.append(model.model.tb1.register_forward_hook(get_hook('7_tb1')))
+    hook_handles.append(model.encoder.pff.register_forward_hook(get_hook('6_pff')))
 
-    hook_handles.append(model.model.srf.register_forward_hook(get_hook('8_srf1')))
+    hook_handles.append(model.detector.tb1.register_forward_hook(get_hook('7_tb1')))
 
-    hook_handles.append(model.model.p1head.register_forward_hook(get_hook('9_p1')))
-    hook_handles.append(model.model.p2head.register_forward_hook(get_hook('10_p2')))
-    hook_handles.append(model.model.p3head.register_forward_hook(get_hook('11_p3')))
-    hook_handles.append(model.model.p4head.register_forward_hook(get_hook('12_p4')))
+    hook_handles.append(model.detector.p1_head.register_forward_hook(get_hook('8_p1')))
 
-    # hook_handles.append(model.model.sfhm_modules[0].register_forward_hook(get_hook('4_sfhm_module')))
-
-    # hook_handles.append(model.model.sal_guide.register_forward_hook(get_hook('9_sal_guide')))
-
-    hook_handles.append(model.model.mobilenet.backbone.register_forward_hook(get_hook('13_CNN_backbone')))
-
-    hook_handles.append(model.model.mobilenet.fpn.register_forward_hook(get_hook('14_CNN_fpn')))
-
-    hook_handles.append(model.model.mobilenet.sfhm[0].register_forward_hook(get_hook('15_CNN_sfhm0')))
-    hook_handles.append(model.model.mobilenet.sfhm[1].register_forward_hook(get_hook('15_CNN_sfhm1')))
-    hook_handles.append(model.model.mobilenet.sfhm[2].register_forward_hook(get_hook('15_CNN_sfhm2')))
-    hook_handles.append(model.model.mobilenet.sfhm[3].register_forward_hook(get_hook('15_CNN_sfhm3')))
-
-    hook_handles.append(model.model.mobilenet.tb8.register_forward_hook(get_hook('16_tb8')))
-    hook_handles.append(model.model.mobilenet.tb7.register_forward_hook(get_hook('17_tb7')))
-    hook_handles.append(model.model.mobilenet.tb6.register_forward_hook(get_hook('18_tb6')))
-    hook_handles.append(model.model.mobilenet.tb5.register_forward_hook(get_hook('19_tb5')))
-
-    hook_handles.append(model.model.mobilenet.srf.register_forward_hook(get_hook('20_srf2')))
-
-    hook_handles.append(model.model.mobilenet.p5head.register_forward_hook(get_hook('21_p5')))
-    hook_handles.append(model.model.mobilenet.p6head.register_forward_hook(get_hook('22_p6')))
-    hook_handles.append(model.model.mobilenet.p7head.register_forward_hook(get_hook('23_p7')))
-    hook_handles.append(model.model.mobilenet.p8head.register_forward_hook(get_hook('24_p8')))
-
-    # hook_handles.append(model.model.mobilenet.sal_guide.register_forward_hook(get_hook('18_cnn_sal_guide')))
 
     print("4. 正在读取并预处理图片...")
-    img_path = "/home/linweixuan/ChangeDINO/datasets/ESDIs-SOD/test/images/10_28.jpg"
+    # img_path = "/home/linweixuan/ChangeDINO/datasets/ESDIs-SOD/test/images/10_28.jpg"
+    img_path = "/root/autodl-tmp/ChangeDINO/datasets/ESDIs-SOD/test/images/10_28.jpg"
 
     if not os.path.exists(img_path):
         print(f"❌ 找不到图片：{img_path}")

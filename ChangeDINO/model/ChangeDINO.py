@@ -71,45 +71,46 @@ def get_backbone(backbone_name):
         backbone = timm.create_model("resnet18d", pretrained=True, features_only=True)
         backbone.channels = [64, 64, 128, 256, 512]
     elif backbone_name == "resnet34":
+        backbone = timm.create_model("resnet34", pretrained=False)
+        timm.models.load_checkpoint(
+            backbone,
+            "/root/autodl-tmp/ChangeDINO/model/backbone/resnet34.pth",
+            strict=True,
+        )
+        backbone = timm.create_model("resnet34", pretrained=False, features_only=True)
+        backbone.channels = [64, 64, 128, 256, 512]
+    else:
+        raise NotImplementedError("BACKBONE [%s] is not implemented!\n" % backbone_name)
+    return backbone
+'''elif backbone_name == "resnet34":
         backbone = timm.create_model("resnet34", pretrained=False, features_only=True)
         backbone.channels = [64, 64, 128, 256, 512]
         timm.models.load_checkpoint(
             backbone,
             "/root/autodl-tmp/ChangeDINO/model/backbone/resnet34.pth",
             strict=False,
-        )
-    else:
-        raise NotImplementedError("BACKBONE [%s] is not implemented!\n" % backbone_name)
-    return backbone
-
+        )'''
 
 class ParallelFusionBlock(nn.Module):
     def __init__(self, in_channels, out_channels, reduction_ratio=8):
         super().__init__()
 
-        # 1. 1x1 卷积降维：只做通道维度的融合，绝对不破坏（模糊）任何空间位置的极细边缘
         self.reduce = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True)
         )
 
-        # 2. 局部卷积分支：负责提取和融合局部空间特征 (保持你原来的 DsBnRelu)
         self.conv_branch = DsBnRelu(out_channels, out_channels)
 
-        # 3. 全局注意力分支：直接在未被 3x3 卷积平滑的特征上寻找异常突变 (保持你原来的 CBAM)
         self.attn_branch = CBAM(out_channels, reduction_ratio)
 
     def forward(self, x):
-        # 先统一降维 (例如 384 -> 128)
+
         x_reduced = self.reduce(x)
 
-        # ================== 并行双分支 ==================
-        # 分支1: 局部平滑与特征融合
         out_conv = self.conv_branch(x_reduced)
 
-        # 分支2: 注意力掩码高亮异常区域
-        # 此时的 x_reduced 保留了最原始的高频突变，CBAM 能更准地抓取 MaxPool 和 AvgPool
         out_attn = self.attn_branch(x_reduced)
 
         return out_conv + out_attn
