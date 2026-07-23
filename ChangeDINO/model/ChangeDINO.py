@@ -14,20 +14,18 @@ from .blocks.refine import LearnableSoftMorph
 from .blocks.sfhm import SFHM
 from .backbone.mobilenetv2 import mobilenet_v2
 
-class SRFMaskGenerator(nn.Module):
+class EdgeExtraction(nn.Module):
     def __init__(self, in_channels=128):
         super().__init__()
 
-        self.mask_gen = nn.Sequential(
-            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 1, kernel_size=1, bias=True),
-            nn.Sigmoid()
+        self.edge = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(inplace=True)
         )
 
     def forward(self, x):
-        return self.mask_gen(x)
+        return self.edge(x)
 
 
 class DsBnRelu(nn.Module):
@@ -63,6 +61,7 @@ class GroupWeightFusion(nn.Module):
             outs.append(weighted)
         return outs  # 4个group
 
+
 def get_backbone(backbone_name):
     if backbone_name == "mobilenetv2":
         backbone = mobilenet_v2(pretrained=True, progress=True)
@@ -71,6 +70,26 @@ def get_backbone(backbone_name):
         backbone = timm.create_model("resnet18d", pretrained=True, features_only=True)
         backbone.channels = [64, 64, 128, 256, 512]
     elif backbone_name == "resnet34":
+        backbone = timm.create_model("resnet34", pretrained=False, features_only=True)
+        backbone.channels = [64, 64, 128, 256, 512]
+        state_dict = torch.load(
+            "/root/autodl-tmp/ChangeDINO/model/backbone/resnet34-b627a593.pth",
+            map_location="cpu",
+            weights_only=True
+        )
+        if "state_dict" in state_dict:
+            state_dict = state_dict["state_dict"]
+        elif "model" in state_dict:
+            state_dict = state_dict["model"]
+        state_dict.pop("fc.weight", None)
+        state_dict.pop("fc.bias", None)
+        backbone.load_state_dict(state_dict, strict=True)
+    else:
+        raise NotImplementedError("BACKBONE [%s] is not implemented!\n" % backbone_name)
+    return backbone
+
+
+    '''elif backbone_name == "resnet34":
         backbone = timm.create_model("resnet34", pretrained=False)
         timm.models.load_checkpoint(
             backbone,
@@ -78,18 +97,8 @@ def get_backbone(backbone_name):
             strict=True,
         )
         backbone = timm.create_model("resnet34", pretrained=False, features_only=True)
-        backbone.channels = [64, 64, 128, 256, 512]
-    else:
-        raise NotImplementedError("BACKBONE [%s] is not implemented!\n" % backbone_name)
-    return backbone
-'''elif backbone_name == "resnet34":
-        backbone = timm.create_model("resnet34", pretrained=False, features_only=True)
-        backbone.channels = [64, 64, 128, 256, 512]
-        timm.models.load_checkpoint(
-            backbone,
-            "/root/autodl-tmp/ChangeDINO/model/backbone/resnet34.pth",
-            strict=False,
-        )'''
+        backbone.channels = [64, 64, 128, 256, 512]'''
+
 
 class ParallelFusionBlock(nn.Module):
     def __init__(self, in_channels, out_channels, reduction_ratio=8):
@@ -138,7 +147,7 @@ class PyramidFeatureFusion(nn.Module):
         self.c1 = ParallelFusionBlock(in_dims[0] + hidden_dim, in_dims[0])
 
     def forward(self, feas, ds_fea):
-        # process backbone (CNN) features
+
         x1, x2, x3, x4 = (
             feas  # [B, 128, 64, 64], [B, 128, 32, 32], [B, 128, 16, 16], [B, 128, 8, 8]
         )
@@ -263,7 +272,7 @@ class Encoder(nn.Module):
         )
 
         # 实例化 4 个尺度的 SFHM 模块
-        '''self.sfhm_modules = nn.ModuleList([
+        self.sfhm_modules = nn.ModuleList([
             SFHM(in_dim=fpn_channels) for _ in range(4)
         ])
         # ===============================================================
@@ -275,11 +284,12 @@ class Encoder(nn.Module):
                 nn.Conv2d(dino_adapted_ch, 1, kernel_size=1, bias=True),
                 nn.Sigmoid()  # 压缩到 0~1 之间，作为概率权重
             ) for _ in range(4)
-        ])'''
+        ])
+
 
     def forward(self, x):
 
-        fea = self.backbone.forward(x)
+        fea = self.backbone(x)
         # fea = self.fpn(fea[-4:])    # channel：128  size:64,32,16,8
         fea = [self.cnn_proj[3-i](fea[-(4-i)]) for i in range(4)]
 
@@ -289,15 +299,15 @@ class Encoder(nn.Module):
 
         ds_fea_adapted = self.defect_adapter(ds_fea)
 
-        '''enhanced_feas = []
+        enhanced_feas = []
 
         for i in range(4):
             sfhm_out = self.sfhm_modules[i](fea[i])
             gate = self.dino_gates[i](ds_fea_adapted[i])
             gated_sfhm_out = sfhm_out * gate
-            enhanced_feas.append(gated_sfhm_out)'''
+            enhanced_feas.append(gated_sfhm_out)
 
-        final_fea = self.pff(fea, ds_fea_adapted)
+        final_fea = self.pff(enhanced_feas, ds_fea_adapted)
 
         return final_fea
 
@@ -359,33 +369,71 @@ class Detector(nn.Module):
             bias=False,
             LayerNorm_type="BiasFree")
 
-        self.srf_mask_gen = SRFMaskGenerator(in_channels=fpn_channels)
+        self.conv4 = nn.Sequential(
+            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(fpn_channels),
+            nn.ReLU(inplace=True)
+        )
+        self.conv3 = nn.Sequential(
+            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(fpn_channels),
+            nn.ReLU(inplace=True)
+        )
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(fpn_channels),
+            nn.ReLU(inplace=True)
+        )
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(fpn_channels),
+            nn.ReLU(inplace=True)
+        )
+
+        self.edge = EdgeExtraction(in_channels=fpn_channels)
 
         self.p4_head = ConvOut(128)
         self.p3_head = ConvOut(128)
         self.p2_head = ConvOut(128)
         self.p1_head = ConvOut(128)
 
+        self.conv5 = nn.Conv2d(fpn_channels, 1, kernel_size=1, bias=False)
+
     def forward(self, xs):
 
         fea1, fea2, fea3, fea4 = xs
 
-        # 从最深层的p4开始
-        fea4 = self.tb4(fea4)
+        fea4_up = F.interpolate(fea4, size=(64, 64), mode="bilinear", align_corners=False)
+        edge_input = fea1 + fea4_up
+        edge_mask = self.edge(edge_input)
 
-        # p5特征融合到p3
-        fea3 = self.p4_to_p3(fea4, fea3)
-        fea3 = self.tb3(fea3)
+        edge_mask_4 = F.interpolate(edge_mask, size=(8, 8), mode="bilinear", align_corners=False)
+        fea4E = torch.cat([edge_mask_4, fea4], dim=1)
+        t4 = self.conv4(fea4E)
+        fea4D = self.tb4(t4)
 
-        # p4特征融合到p2
-        fea2 = self.p3_to_p2(fea3, fea2)
-        fea2 = self.tb2(fea2)
+        edge_mask_3 = F.interpolate(edge_mask, size=(16, 16), mode="bilinear", align_corners=False)
+        fea3E = torch.cat([edge_mask_3, fea3], dim=1)
+        t3 = self.conv3(fea3E)
+        fea3D = self.tb3(self.p4_to_p3(fea4D, t3))
 
-        # p3特征融合到p1
-        fea1 = self.p2_to_p1(fea2, fea1)
-        fea1 = self.tb1(fea1)
+        edge_mask_2 = F.interpolate(edge_mask, size=(32, 32), mode="bilinear", align_corners=False)
+        fea2E = torch.cat([edge_mask_2, fea2], dim=1)
+        t2 = self.conv2(fea2E)
+        fea2D = self.tb2(self.p3_to_p2(fea3D, t2))
 
-        edge_mask = self.srf_mask_gen(fea1)              # B,1,128,128
+        edge_mask_1 = F.interpolate(edge_mask, size=(64, 64), mode="bilinear", align_corners=False)
+        fea1E = torch.cat([edge_mask_1, fea1], dim=1)
+        t1 = self.conv1(fea1E)
+        fea1D = self.tb1(self.p2_to_p1(fea2D, t1))
+
+        pred_p4 = self.p4_head(fea4D)
+        pred_p3 = self.p3_head(fea3D)
+        pred_p2 = self.p2_head(fea2D)
+        pred_p1 = self.p1_head(fea1D)
+
+
+        '''edge_mask = self.srf_mask_gen(fea1)              # B,1,128,128
         fea_p1 = fea1 * (1.0 + edge_mask)
 
         edge_p2 = F.interpolate(edge_mask, (32, 32), mode='bilinear')
@@ -395,12 +443,7 @@ class Detector(nn.Module):
         fea_p3 = fea3 * (1.0 + edge_p3)  # 32×32
 
         edge_p4 = F.interpolate(edge_mask, (8, 8), mode='bilinear')
-        fea_p4 = fea4 * (1.0 + edge_p4)
-
-        pred_p4 = self.p4_head(fea_p4)
-        pred_p3 = self.p3_head(fea_p3)
-        pred_p2 = self.p2_head(fea_p2)
-        pred_p1 = self.p1_head(fea_p1)
+        fea_p4 = fea4 * (1.0 + edge_p4)'''
 
         # 3. 上采样到统一尺寸
         pred_p1 = F.interpolate(
@@ -416,7 +459,10 @@ class Detector(nn.Module):
             pred_p4, size=(256, 256), mode="bilinear", align_corners=False
         )
 
+        edge_mask = self.conv5(edge_mask)
+
         return pred_p1, pred_p2, pred_p3, pred_p4, edge_mask
+        # return pred_p1, pred_p2, pred_p3, pred_p4
 
 
 class ChangeModel(nn.Module):
@@ -429,14 +475,14 @@ class ChangeModel(nn.Module):
     @torch.inference_mode()
     def _forward(self, x):
         # for inference
-        fea = self.encoder(x)
-        pred, _, _, _, _ = self.detector(fea)
+        final_fea = self.encoder(x)
+        pred, _, _, _, _ = self.detector(final_fea)
         # pred = self.refiner(pred)
         return pred
 
     def forward(self, x):
         # for training
-        fea = self.encoder(x)
-        pred1, pred2, pred3, pred4, edge_mask = self.detector(fea)
+        final_fea = self.encoder(x)
+        pred1, pred2, pred3, pred4, edge_mask = self.detector(final_fea)
         # final_pred = self.refiner(preds[0])
-        return pred1, pred2, pred3, pred4, edge_mask  # pred, pred_p2, pred_p3, pred_p4, pred_p5
+        return pred1, pred2, pred3, pred4, edge_mask

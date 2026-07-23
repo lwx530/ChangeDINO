@@ -37,6 +37,13 @@
           </mappings>
         </serverdata>
       </paths>
+      <paths name="root@connect.nmb2.seetacloud.com:22081 password">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/root/autodl-tmp/ChangeDINO" local="$PROJECT_DIR$/ChangeDINO" />
+          </mappings>
+        </serverdata>
+      </paths>
     </serverData>
     <option name="myAutoUpload" value="ALWAYS" />
   </component>

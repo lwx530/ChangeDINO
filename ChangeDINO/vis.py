@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def save_feature_map(feature_tensor, save_name, save_dir="vis_results_10_28", target_size=(256, 256)):
+def save_feature_map(feature_tensor, save_name, save_dir="vis_results_10_9", target_size=(256, 256)):
     os.makedirs(save_dir, exist_ok=True)
 
     # 1. 递归处理多尺度特征（list/tuple类型）
@@ -77,7 +77,7 @@ def main():
 
     print("2. 正在加载训练好的权重...")
     # weight_path = "/home/linweixuan/ChangeDINO/checkpoints/ESDI-36/ESDI-36_resnet34_best.pth"
-    weight_path = "/root/autodl-tmp/ChangeDINO/checkpoints/ESDI-36/ESDI-36_resnet34_best.pth"
+    weight_path = "/root/autodl-tmp/ChangeDINO/checkpoints/ESDI-40/ESDI-40_resnet34_best.pth"
 
     if os.path.exists(weight_path):
         checkpoint = torch.load(weight_path, map_location=device)
@@ -116,7 +116,7 @@ def main():
 
     print("4. 正在读取并预处理图片...")
     # img_path = "/home/linweixuan/ChangeDINO/datasets/ESDIs-SOD/test/images/10_28.jpg"
-    img_path = "/root/autodl-tmp/ChangeDINO/datasets/ESDIs-SOD/test/images/10_28.jpg"
+    img_path = "/root/autodl-tmp/ChangeDINO/datasets/ESDIs-SOD/test/images/10_9.jpg"
 
     if not os.path.exists(img_path):
         print(f"❌ 找不到图片：{img_path}")
@@ -136,7 +136,7 @@ def main():
 
     print("6. 正在绘制特征热力图...")
     # 推理完成后，dino_features 字典里已经装满了我们要的特征
-    save_dir = "vis_results_10_28"
+    save_dir = "vis_results_10_9"
     for layer_name in sorted(all_features.keys()):
         print(f"   -> 保存 {layer_name} 特征图...")
         feat_data = all_features[layer_name]

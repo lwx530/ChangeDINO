@@ -67,9 +67,9 @@ class Model(nn.Module):
         )
         boundary = self.boundary_loss(edge_mask_up, label)
 
-        hybrid = loss1 + 0.5 * (loss2 + loss3 + loss4)
+        hybrid = loss1 + loss2 + loss3 + loss4
 
-        loss = hybrid + 0.5 * boundary
+        loss = hybrid + boundary
 
         return pred1, loss
 

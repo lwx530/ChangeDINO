@@ -59,7 +59,8 @@ class BoundaryLoss(nn.Module):
         # ==============================================================
 
         # 让 SRF 模块逼近这个完美清晰的梯度边缘
-        loss = F.mse_loss(pred, target_boundary)
+        # loss = F.mse_loss(pred, target_boundary)
+        loss = F.binary_cross_entropy_with_logits(pred, target_boundary)
 
         return loss
 
