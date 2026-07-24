@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="changedino" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="Remote Python 3.12.3 (sftp://root@connect.nmb1.seetacloud.com:22940/root/miniconda3/bin/python)" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="Remote Python 3.12.3 (sftp://root@connect.nmb2.seetacloud.com:22081/root/miniconda3/bin/python)" project-jdk-type="Python SDK" />
 </project>

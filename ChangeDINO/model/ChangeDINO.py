@@ -10,7 +10,6 @@ import numpy as np
 from .blocks.cbam import CBAM
 from .blocks.adapter import DINOV3Wrapper, LinearAdapter, ConvOut
 from .blocks.diffatts import TransformerBlock
-from .blocks.refine import LearnableSoftMorph
 from .blocks.sfhm import SFHM
 from .backbone.mobilenetv2 import mobilenet_v2
 
@@ -87,17 +86,6 @@ def get_backbone(backbone_name):
     else:
         raise NotImplementedError("BACKBONE [%s] is not implemented!\n" % backbone_name)
     return backbone
-
-
-    '''elif backbone_name == "resnet34":
-        backbone = timm.create_model("resnet34", pretrained=False)
-        timm.models.load_checkpoint(
-            backbone,
-            "/root/autodl-tmp/ChangeDINO/model/backbone/resnet34.pth",
-            strict=True,
-        )
-        backbone = timm.create_model("resnet34", pretrained=False, features_only=True)
-        backbone.channels = [64, 64, 128, 256, 512]'''
 
 
 class ParallelFusionBlock(nn.Module):
@@ -241,7 +229,7 @@ class Encoder(nn.Module):
         self.backbone_channels = self.backbone.channels
         self.cnn_proj = nn.ModuleList([
             nn.Sequential(
-                nn.Conv2d(self.backbone_channels[-(i + 1)], fpn_channels, kernel_size=1, bias=False),
+                nn.Conv2d(self.backbone_channels[i], fpn_channels, kernel_size=1, bias=False),
                 nn.BatchNorm2d(fpn_channels),
                 nn.ReLU(inplace=True),
             ) for i in range(4)
@@ -261,7 +249,7 @@ class Encoder(nn.Module):
         self.defect_adapter = LinearAdapter(
             in_dim=1024,
             out_dim=dense_out_dim,  # 即 256
-            sizes=(64, 32, 16, 8)
+            sizes=(128, 64, 32, 16)
         )
 
         self.pff = PyramidFeatureFusion(
@@ -291,7 +279,7 @@ class Encoder(nn.Module):
 
         fea = self.backbone(x)
         # fea = self.fpn(fea[-4:])    # channel：128  size:64,32,16,8
-        fea = [self.cnn_proj[3-i](fea[-(4-i)]) for i in range(4)]
+        fea = [self.cnn_proj[i](fea[i]) for i in range(4)]
 
         raw_ds_fea = self.dino(x)  # 获取24层
 
@@ -403,26 +391,26 @@ class Detector(nn.Module):
 
         fea1, fea2, fea3, fea4 = xs
 
-        fea4_up = F.interpolate(fea4, size=(64, 64), mode="bilinear", align_corners=False)
+        fea4_up = F.interpolate(fea4, size=(128, 128), mode="bilinear", align_corners=False)
         edge_input = fea1 + fea4_up
         edge_mask = self.edge(edge_input)
 
-        edge_mask_4 = F.interpolate(edge_mask, size=(8, 8), mode="bilinear", align_corners=False)
+        edge_mask_4 = F.interpolate(edge_mask, size=(16, 16), mode="bilinear", align_corners=False)
         fea4E = torch.cat([edge_mask_4, fea4], dim=1)
         t4 = self.conv4(fea4E)
         fea4D = self.tb4(t4)
 
-        edge_mask_3 = F.interpolate(edge_mask, size=(16, 16), mode="bilinear", align_corners=False)
+        edge_mask_3 = F.interpolate(edge_mask, size=(32, 32), mode="bilinear", align_corners=False)
         fea3E = torch.cat([edge_mask_3, fea3], dim=1)
         t3 = self.conv3(fea3E)
         fea3D = self.tb3(self.p4_to_p3(fea4D, t3))
 
-        edge_mask_2 = F.interpolate(edge_mask, size=(32, 32), mode="bilinear", align_corners=False)
+        edge_mask_2 = F.interpolate(edge_mask, size=(64, 64), mode="bilinear", align_corners=False)
         fea2E = torch.cat([edge_mask_2, fea2], dim=1)
         t2 = self.conv2(fea2E)
         fea2D = self.tb2(self.p3_to_p2(fea3D, t2))
 
-        edge_mask_1 = F.interpolate(edge_mask, size=(64, 64), mode="bilinear", align_corners=False)
+        edge_mask_1 = F.interpolate(edge_mask, size=(128, 128), mode="bilinear", align_corners=False)
         fea1E = torch.cat([edge_mask_1, fea1], dim=1)
         t1 = self.conv1(fea1E)
         fea1D = self.tb1(self.p2_to_p1(fea2D, t1))
@@ -431,19 +419,6 @@ class Detector(nn.Module):
         pred_p3 = self.p3_head(fea3D)
         pred_p2 = self.p2_head(fea2D)
         pred_p1 = self.p1_head(fea1D)
-
-
-        '''edge_mask = self.srf_mask_gen(fea1)              # B,1,128,128
-        fea_p1 = fea1 * (1.0 + edge_mask)
-
-        edge_p2 = F.interpolate(edge_mask, (32, 32), mode='bilinear')
-        fea_p2 = fea2 * (1.0 + edge_p2)  # 64×64
-
-        edge_p3 = F.interpolate(edge_mask, (16, 16), mode='bilinear')
-        fea_p3 = fea3 * (1.0 + edge_p3)  # 32×32
-
-        edge_p4 = F.interpolate(edge_mask, (8, 8), mode='bilinear')
-        fea_p4 = fea4 * (1.0 + edge_p4)'''
 
         # 3. 上采样到统一尺寸
         pred_p1 = F.interpolate(
@@ -462,7 +437,6 @@ class Detector(nn.Module):
         edge_mask = self.conv5(edge_mask)
 
         return pred_p1, pred_p2, pred_p3, pred_p4, edge_mask
-        # return pred_p1, pred_p2, pred_p3, pred_p4
 
 
 class ChangeModel(nn.Module):
@@ -470,19 +444,16 @@ class ChangeModel(nn.Module):
         super().__init__()
         self.encoder = Encoder(backbone=backbone, fpn_channels=fpn_channels, **kwargs)
         self.detector = Detector(fpn_channels=fpn_channels, **kwargs)
-        # self.refiner = LearnableSoftMorph(1, 9)
 
     @torch.inference_mode()
     def _forward(self, x):
         # for inference
         final_fea = self.encoder(x)
         pred, _, _, _, _ = self.detector(final_fea)
-        # pred = self.refiner(pred)
         return pred
 
     def forward(self, x):
         # for training
         final_fea = self.encoder(x)
         pred1, pred2, pred3, pred4, edge_mask = self.detector(final_fea)
-        # final_pred = self.refiner(preds[0])
         return pred1, pred2, pred3, pred4, edge_mask
