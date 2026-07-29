@@ -415,16 +415,16 @@ class Detector(nn.Module):
         t1 = self.conv1(fea1E)
         fea1D = self.tb1(self.p2_to_p1(fea2D, t1))
 
-        pred_p4 = self.p4_head(fea4D)
+        '''pred_p4 = self.p4_head(fea4D)
         pred_p3 = self.p3_head(fea3D)
-        pred_p2 = self.p2_head(fea2D)
+        pred_p2 = self.p2_head(fea2D)'''
         pred_p1 = self.p1_head(fea1D)
 
         # 3. 上采样到统一尺寸
         pred_p1 = F.interpolate(
             pred_p1, size=(256, 256), mode="bilinear", align_corners=False
         )
-        pred_p2 = F.interpolate(
+        '''pred_p2 = F.interpolate(
             pred_p2, size=(256, 256), mode="bilinear", align_corners=False
         )
         pred_p3 = F.interpolate(
@@ -432,11 +432,11 @@ class Detector(nn.Module):
         )
         pred_p4 = F.interpolate(
             pred_p4, size=(256, 256), mode="bilinear", align_corners=False
-        )
+        )'''
 
         edge_mask = self.conv5(edge_mask)
 
-        return pred_p1, pred_p2, pred_p3, pred_p4, edge_mask
+        return pred_p1, edge_mask
 
 
 class ChangeModel(nn.Module):
@@ -449,11 +449,11 @@ class ChangeModel(nn.Module):
     def _forward(self, x):
         # for inference
         final_fea = self.encoder(x)
-        pred, _, _, _, _ = self.detector(final_fea)
+        pred, _ = self.detector(final_fea)
         return pred
 
     def forward(self, x):
         # for training
         final_fea = self.encoder(x)
-        pred1, pred2, pred3, pred4, edge_mask = self.detector(final_fea)
-        return pred1, pred2, pred3, pred4, edge_mask
+        pred1, edge_mask = self.detector(final_fea)
+        return pred1, edge_mask

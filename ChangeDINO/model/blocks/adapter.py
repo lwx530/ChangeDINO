@@ -175,7 +175,7 @@ class DINOV3Wrapper(nn.Module):
             target_layers=target_layers,
             dim=1024,
             bottleneck_dim=64,  # 你可以根据显存调整，通常 64 或 128
-            use_attn=True,
+            use_attn=False,
             use_mlp=True
         )
 

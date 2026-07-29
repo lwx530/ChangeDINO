@@ -52,12 +52,12 @@ class Model(nn.Module):
         self.model.cuda()
 
     def forward(self, x, label):
-        pred1, pred2, pred3, pred4, edge_mask = self.model(x)
+        pred1, edge_mask = self.model(x)
         label = label.long()
         loss1 = self.hybrid_loss(pred1, label)
-        loss2 = self.hybrid_loss(pred2, label)
-        loss3 = self.hybrid_loss(pred3, label)
-        loss4 = self.hybrid_loss(pred4, label)
+        # loss2 = self.hybrid_loss(pred2, label)
+        # loss3 = self.hybrid_loss(pred3, label)
+        # loss4 = self.hybrid_loss(pred4, label)
 
         edge_mask_up = F.interpolate(
             edge_mask,
@@ -67,7 +67,7 @@ class Model(nn.Module):
         )
         boundary = self.boundary_loss(edge_mask_up, label)
 
-        hybrid = loss1 + loss2 + loss3 + loss4
+        hybrid = loss1
 
         loss = hybrid + boundary
 
