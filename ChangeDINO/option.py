@@ -10,13 +10,13 @@ class Options:
         self.parser.add_argument(
             "--gpu_ids", type=str, default="0", help="gpu ids: e.g. 0. use -1 for CPU"
         )
-        self.parser.add_argument("--name", type=str, default="ESDI-1")
-        '''self.parser.add_argument(
-            "--dataroot", type=str, default="/home/linweixuan/ChangeDINO/datasets"
-        )'''
+        self.parser.add_argument("--name", type=str, default="ESDI-4")
         self.parser.add_argument(
-            "--dataroot", type=str, default="/root/autodl-tmp/ChangeDINO/datasets"
+            "--dataroot", type=str, default="/home/linweixuan/ChangeDINO/datasets"
         )
+        '''self.parser.add_argument(
+            "--dataroot", type=str, default="/root/autodl-tmp/ChangeDINO/datasets"
+        )'''
         self.parser.add_argument("--dataset", type=str, default="ESDIs-SOD")
         self.parser.add_argument(
             "--checkpoint_dir",

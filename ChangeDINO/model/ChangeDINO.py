@@ -13,7 +13,7 @@ from .blocks.diffatts import TransformerBlock
 from .blocks.sfhm import SFHM
 from .backbone.mobilenetv2 import mobilenet_v2
 
-class EdgeExtraction(nn.Module):
+'''class EdgeExtraction(nn.Module):
     def __init__(self, in_channels=128):
         super().__init__()
 
@@ -24,8 +24,59 @@ class EdgeExtraction(nn.Module):
         )
 
     def forward(self, x):
-        return self.edge(x)
+        return self.edge(x)'''
 
+class EdgeExtraction(nn.Module):
+    def __init__(self, in_channels=128):
+        super().__init__()
+
+        # 1. 常规分支：3x3卷积
+        # 兜底捕获各向同性斑点和整体轮廓
+        self.branch_normal = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(in_channels)
+        )
+
+        # 2. 水平条形分支：1x3卷积
+        # 提取垂直走向的细长边缘
+        self.branch_horizontal = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, kernel_size=(1, 3), padding=(0, 1), bias=False),
+            nn.BatchNorm2d(in_channels)
+        )
+
+        # 3. 垂直条形分支：3x1卷积
+        # 提取水平走向的细长边缘
+        self.branch_vertical = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, kernel_size=(3, 1), padding=(1, 0), bias=False),
+            nn.BatchNorm2d(in_channels)
+        )
+
+        self.relu = nn.ReLU(inplace=True)
+
+        # 4. 融合与降维层
+        # 拼接后通道数为 in_channels * 3，通过 1x1 卷积降维回 in_channels
+        # 这里的 1x1 卷积起到了“跨通道注意力”的作用，自适应过滤噪声通道
+        self.fusion = nn.Sequential(
+            nn.Conv2d(in_channels * 3, in_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        # 分别提取三种感受野的特征
+        edge_normal = self.branch_normal(x)
+        edge_h = self.branch_horizontal(x)
+        edge_v = self.branch_vertical(x)
+
+        # 在通道维度 (dim=1) 进行拼接 Concat
+        # 形状从 [B, C, H, W] 变为 [B, 3C, H, W]
+        concat_edge = torch.cat([edge_normal, edge_h, edge_v], dim=1)
+        concat_edge = self.relu(concat_edge)
+
+        # 通过 1x1 卷积自适应融合特征并降维回 [B, C, H, W]
+        out = self.fusion(concat_edge)
+
+        return out
 
 class DsBnRelu(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, dilation=1):
@@ -72,7 +123,7 @@ def get_backbone(backbone_name):
         backbone = timm.create_model("resnet34", pretrained=False, features_only=True)
         backbone.channels = [64, 64, 128, 256, 512]
         state_dict = torch.load(
-            "/root/autodl-tmp/ChangeDINO/model/backbone/resnet34-b627a593.pth",
+            "/home/linweixuan/ChangeDINO/model/backbone/resnet34-b627a593.pth",
             map_location="cpu",
             weights_only=True
         )

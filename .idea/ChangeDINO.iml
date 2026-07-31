@@ -2,7 +2,7 @@
 <module type="PYTHON_MODULE" version="4">
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$" />
-    <orderEntry type="jdk" jdkName="Remote Python 3.12.3 (sftp://root@connect.nmb1.seetacloud.com:22940/root/miniconda3/bin/python)" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="Changedino" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
   <component name="PyDocumentationSettings">
