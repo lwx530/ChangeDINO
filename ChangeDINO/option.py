@@ -10,7 +10,7 @@ class Options:
         self.parser.add_argument(
             "--gpu_ids", type=str, default="1", help="gpu ids: e.g. 0. use -1 for CPU"
         )
-        self.parser.add_argument("--name", type=str, default="ESDI-7")
+        self.parser.add_argument("--name", type=str, default="ESDI-8")
         self.parser.add_argument(
             "--dataroot", type=str, default="/home/linweixuan/ChangeDINO/datasets"
         )

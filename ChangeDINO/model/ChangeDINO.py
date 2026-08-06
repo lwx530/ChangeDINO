@@ -8,23 +8,10 @@ import numpy as np
 
 # from .blocks.fpn import FPN, DsBnRelu
 from .blocks.cbam import CBAM
-from .blocks.adapter import DINOV3Wrapper, LinearAdapter, ConvOut
+from .blocks.adapter import DINOV3Wrapper, LinearAdapter, ConvOut, ViTAdapterLike
 from .blocks.diffatts import TransformerBlock
 from .blocks.sfhm import SFHM
 from .backbone.mobilenetv2 import mobilenet_v2
-
-'''class EdgeExtraction(nn.Module):
-    def __init__(self, in_channels=128):
-        super().__init__()
-
-        self.edge = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(in_channels),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, x):
-        return self.edge(x)'''
 
 class EdgeExtraction(nn.Module):
     def __init__(self, in_channels=128):
@@ -260,7 +247,7 @@ class PyramidFeatureFusion(nn.Module):
         return x1, x2, x3, x4'''
 
 
-class FAMFusion(nn.Module):
+'''class FAMFusion(nn.Module):
 
     def __init__(self, cnn_dim, dino_dim, dim=128, reduction=8):
         super().__init__()
@@ -290,7 +277,7 @@ class FAMFusion(nn.Module):
         Cp = A * self.conv6(c) + c       # CNN 被 Transformer 调制（残差）
         Tp = A * self.conv7(t) + t       # Transformer 被 CNN 调制（残差）
         CT = self.se(torch.cat([c, t], dim=1)) * torch.cat([c, t], dim=1)
-        return self.conv8(torch.cat([Cp, Tp, CT], dim=1))
+        return self.conv8(torch.cat([Cp, Tp, CT], dim=1))'''
 
 class Encoder(nn.Module):
     def __init__(
@@ -335,12 +322,19 @@ class Encoder(nn.Module):
             sizes=(128, 64, 32, 16)
         )
 
-        '''self.pff = PyramidFeatureFusion(
+        self.defect_adapter = ViTAdapterLike(
+            cnn_dim=fpn_channels,  # 128
+            dino_dim=1024,  # DINO 原始维度
+            out_dim=fpn_channels,  # 256
+            num_scales=4
+        )
+
+        self.pff = PyramidFeatureFusion(
             in_dims=[fpn_channels] * 4,
             dense_dim=1024,
             patch_size=self.dino.patch_size,
             hidden_dim=dense_out_dim,
-        )'''
+        )
 
         # 实例化 4 个尺度的 SFHM 模块
         self.sfhm_modules = nn.ModuleList([
@@ -348,22 +342,22 @@ class Encoder(nn.Module):
         ])
         # ===============================================================
 
-        self.fam_modules = nn.ModuleList([
+        '''self.fam_modules = nn.ModuleList([
             FAMFusion(
                 cnn_dim=fpn_channels,      # CNN 分支：128
                 dino_dim=dense_out_dim,    # DINO 适配后：256
                 dim=fpn_channels,          # 统一交互维度
             ) for _ in range(4)
-        ])
+        ])'''
 
         dino_adapted_ch = fpn_channels * 2
 
-        '''self.dino_gates = nn.ModuleList([
+        self.dino_gates = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(dino_adapted_ch, 1, kernel_size=1, bias=True),
                 nn.Sigmoid()  # 压缩到 0~1 之间，作为概率权重
             ) for _ in range(4)
-        ])'''
+        ])
 
 
     def forward(self, x):
@@ -372,11 +366,16 @@ class Encoder(nn.Module):
         # fea = self.fpn(fea[-4:])    # channel：128  size:64,32,16,8
         fea = [self.cnn_proj[i](fea[i]) for i in range(4)]
 
+        enhanced_feas = []
+        for i in range(4):
+            enhanced_feas.append(self.sfhm_modules[i](fea[i]))
+
         raw_ds_fea = self.dino(x)  # 获取24层
 
         ds_fea = self.groupweight(raw_ds_fea)
 
-        ds_fea_adapted = self.defect_adapter(ds_fea)
+        # ds_fea_adapted = self.defect_adapter(ds_fea)
+        final_fea = self.defect_adapter(fea, ds_fea)
 
         '''enhanced_feas = []
 
@@ -384,16 +383,9 @@ class Encoder(nn.Module):
             sfhm_out = self.sfhm_modules[i](fea[i])
             gate = self.dino_gates[i](ds_fea_adapted[i])
             gated_sfhm_out = sfhm_out * gate
-            enhanced_feas.append(gated_sfhm_out)
+            enhanced_feas.append(gated_sfhm_out)'''
 
-        final_fea = self.pff(enhanced_feas, ds_fea_adapted)'''
-
-        final_fea = []
-
-        for i in range(4):
-            sfhm_out = self.sfhm_modules[i](fea[i])                    # CNN 局部边缘增强
-            fam_out = self.fam_modules[i](sfhm_out, ds_fea_adapted[i])  # 双向交互
-            final_fea.append(fam_out)
+        # final_fea = self.pff(fea, ds_fea_adapted)
 
         return final_fea
 

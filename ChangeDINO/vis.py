@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def save_feature_map(feature_tensor, save_name, save_dir="vis_results_10_11", target_size=(256, 256)):
+def save_feature_map(feature_tensor, save_name, save_dir="vis_results_10_11_7", target_size=(256, 256)):
     os.makedirs(save_dir, exist_ok=True)
 
     # 1. 递归处理多尺度特征
@@ -89,7 +89,7 @@ def main():
     model = ChangeModel(backbone="resnet34").to(device)
 
     print("2. 正在加载训练好的权重...")
-    weight_path = "/home/linweixuan/ChangeDINO/checkpoints/ESDI-4/ESDI-4_resnet34_best.pth"
+    weight_path = "/home/linweixuan/ChangeDINO/checkpoints/ESDI-7/ESDI-7_resnet34_best.pth"
     # weight_path = "/root/autodl-tmp/ChangeDINO/checkpoints/ESDI-1/ESDI-1_resnet34_best.pth"
 
     if os.path.exists(weight_path):
@@ -120,7 +120,10 @@ def main():
 
     hook_handles.append(model.encoder.sfhm_modules[0].register_forward_hook(get_hook('5_SFHM0')))
 
-    hook_handles.append(model.encoder.pff.register_forward_hook(get_hook('6_pff')))
+    hook_handles.append(model.encoder.fam_modules[0].register_forward_hook(get_hook('6_fam0')))
+    hook_handles.append(model.encoder.fam_modules[1].register_forward_hook(get_hook('6_fam1')))
+    hook_handles.append(model.encoder.fam_modules[2].register_forward_hook(get_hook('6_fam2')))
+    hook_handles.append(model.encoder.fam_modules[3].register_forward_hook(get_hook('6_fam3')))
 
     hook_handles.append(model.detector.tb1.register_forward_hook(get_hook('7_tb1')))
 
@@ -151,7 +154,7 @@ def main():
 
     print("6. 正在绘制特征热力图...")
     # 推理完成后，dino_features 字典里已经装满了我们要的特征
-    save_dir = "vis_results_10_11"
+    save_dir = "vis_results_10_11_7"
     for layer_name in sorted(all_features.keys()):
         print(f"   -> 保存 {layer_name} 特征图...")
         feat_data = all_features[layer_name]
