@@ -8,9 +8,9 @@ class Options:
 
     def init(self):
         self.parser.add_argument(
-            "--gpu_ids", type=str, default="1", help="gpu ids: e.g. 0. use -1 for CPU"
+            "--gpu_ids", type=str, default="0", help="gpu ids: e.g. 0. use -1 for CPU"
         )
-        self.parser.add_argument("--name", type=str, default="ESDI-8")
+        self.parser.add_argument("--name", type=str, default="ESDI-13")
         self.parser.add_argument(
             "--dataroot", type=str, default="/home/linweixuan/ChangeDINO/datasets"
         )
@@ -45,7 +45,7 @@ class Options:
         self.parser.add_argument("--gamma_mode", type=str, default="SE")
         self.parser.add_argument("--beta_mode", type=str, default="contextgatedconv")
         self.parser.add_argument('--n_layers', nargs='+', type=int, default=[1, 1, 1, 1])
-        self.parser.add_argument('--extract_ids', nargs='+', type=int, default=list(range(24)))
+        self.parser.add_argument('--extract_ids', nargs='+', type=int, default=[5, 11, 17, 23])
         self.parser.add_argument("--alpha", type=float, default=0.25)
         self.parser.add_argument("--gamma", type=int, default=4, help="gamma for Focal loss")
 

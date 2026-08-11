@@ -8,12 +8,25 @@ import numpy as np
 
 # from .blocks.fpn import FPN, DsBnRelu
 from .blocks.cbam import CBAM
-from .blocks.adapter import DINOV3Wrapper, LinearAdapter, ConvOut, ViTAdapterLike
+from .blocks.adapter import DINOV3Wrapper, LinearAdapter, ConvOut
 from .blocks.diffatts import TransformerBlock
 from .blocks.sfhm import SFHM
 from .backbone.mobilenetv2 import mobilenet_v2
 
 class EdgeExtraction(nn.Module):
+    def __init__(self, in_channels=128):
+        super().__init__()
+
+        self.edge = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        return self.edge(x)
+
+'''class EdgeExtraction(nn.Module):
     def __init__(self, in_channels=128):
         super().__init__()
 
@@ -63,7 +76,7 @@ class EdgeExtraction(nn.Module):
         # 通过 1x1 卷积自适应融合特征并降维回 [B, C, H, W]
         out = self.fusion(concat_edge)
 
-        return out
+        return out'''
 
 class DsBnRelu(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, dilation=1):
@@ -126,7 +139,7 @@ def get_backbone(backbone_name):
     return backbone
 
 
-class ParallelFusionBlock(nn.Module):
+'''class ParallelFusionBlock(nn.Module):
     def __init__(self, in_channels, out_channels, reduction_ratio=8):
         super().__init__()
 
@@ -194,15 +207,84 @@ class PyramidFeatureFusion(nn.Module):
         x1 = torch.cat([x1, a1], 1)
         x1 = self.c1(x1)
 
-        return x1, x2, x3, x4
+        return x1, x2, x3, x4'''
 
-'''class PyramidFeatureFusion(nn.Module):
+
+# LGA内部需要的通道重标定模块 (Squeeze-and-Excitation)
+class SE_Block(nn.Module):
+    def __init__(self, channel, reduction=16):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channel, channel // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channel // reduction, channel, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y
+
+
+# 适配 CNN (dim1) 与 DINO (dim2) 的 LGA 模块
+class LGA(nn.Module):
+    def __init__(self, dim1=128, dim2=256, out_dim=128):
+        super().__init__()
+        # 从模态2生成模态1的门控 (DINO 指导 CNN)
+        self.gate2_to_1 = nn.Sequential(
+            nn.AvgPool2d(kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(dim2, dim1, kernel_size=3, padding=1),
+            nn.Sigmoid()
+        )
+        # 从模态1生成模态2的门控 (CNN 指导 DINO)
+        self.gate1_to_2 = nn.Sequential(
+            nn.AvgPool2d(kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(dim1, dim2, kernel_size=3, padding=1),
+            nn.Sigmoid()
+        )
+
+        self.se1 = SE_Block(dim1)
+        self.se2 = SE_Block(dim2)
+
+        # 论文中的两层 1x1 卷积 Channel Mixer
+        self.channel_mixer = nn.Sequential(
+            nn.Conv2d(dim1 + dim2, out_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_dim, out_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_dim),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x1, x2):
+        # x1: CNN 特征, x2: DINO 特征
+        g1 = self.gate1_to_2(x1)
+        g2 = self.gate2_to_1(x2)
+
+        # 跨模态门控交互 (残差连接 + 逐元素乘法)
+        x1_hat = x1 + g2 * x1
+        x2_hat = x2 + g1 * x2
+
+        # 独立SE重标定
+        x1_se = self.se1(x1_hat)
+        x2_se = self.se2(x2_hat)
+
+        # 拼接与通道降维混合
+        out = torch.cat([x1_se, x2_se], dim=1)
+        return self.channel_mixer(out)
+
+
+# 使用 LGA 替换原本的 PFF
+class PyramidFeatureFusion(nn.Module):
     def __init__(
-        self,
-        in_dims=[128, 128, 128, 128],
-        dense_dim=1024,
-        patch_size=16,
-        hidden_dim=256,
+            self,
+            in_dims=[128, 128, 128, 128],
+            dense_dim=1024,
+            patch_size=16,
+            hidden_dim=256,
     ):
         super().__init__()
         self.in_dims = in_dims
@@ -210,74 +292,25 @@ class PyramidFeatureFusion(nn.Module):
         self.hidden_dim = hidden_dim
         self.patch_size = patch_size
 
-        self.c4 = nn.Sequential(
-            DsBnRelu(in_dims[3] + hidden_dim, in_dims[3]), CBAM(in_dims[3], 8)
-        )
-        self.c3 = nn.Sequential(
-            DsBnRelu(in_dims[2] + hidden_dim, in_dims[2]), CBAM(in_dims[2], 8)
-        )
-        self.c2 = nn.Sequential(
-            DsBnRelu(in_dims[1] + hidden_dim, in_dims[1]), CBAM(in_dims[1], 8)
-        )
-        self.c1 = nn.Sequential(
-            DsBnRelu(in_dims[0] + hidden_dim, in_dims[0]), CBAM(in_dims[0], 8)
-        )
+        # 实例化四个尺度的 LGA 融合模块
+        self.lga4 = LGA(dim1=in_dims[3], dim2=hidden_dim, out_dim=in_dims[3])
+        self.lga3 = LGA(dim1=in_dims[2], dim2=hidden_dim, out_dim=in_dims[2])
+        self.lga2 = LGA(dim1=in_dims[1], dim2=hidden_dim, out_dim=in_dims[1])
+        self.lga1 = LGA(dim1=in_dims[0], dim2=hidden_dim, out_dim=in_dims[0])
 
-    def forward(self, feas, ds_feas):
-        # process backbone (CNN) features
-        x1, x2, x3, x4 = (
-            feas  # [B, 128, 64, 64], [B, 128, 32, 32], [B, 128, 16, 16], [B, 128, 8, 8]
-        )
-        a1, a2, a3, a4 = (
-            ds_feas  # [B, 256, 64, 64], [B, 256, 32, 32], [B, 256, 16, 16], [B, 256, 8, 8]
-        )
+    def forward(self, feas, ds_fea):
+        x1, x2, x3, x4 = feas  # CNN特征: [B, 128, H, W]
+        a1, a2, a3, a4 = ds_fea  # DINO特征: [B, 256, H, W]
 
-        x4 = torch.cat([x4, a4], 1)
-        x4 = self.c4(x4)
+        # 依次通过各个尺度的双向 LGA 融合
+        x4_out = self.lga4(x4, a4)
+        x3_out = self.lga3(x3, a3)
+        x2_out = self.lga2(x2, a2)
+        x1_out = self.lga1(x1, a1)
 
-        x3 = torch.cat([x3, a3], 1)
-        x3 = self.c3(x3)
-
-        x2 = torch.cat([x2, a2], 1)
-        x2 = self.c2(x2)
-
-        x1 = torch.cat([x1, a1], 1)
-        x1 = self.c1(x1)
-
-        return x1, x2, x3, x4'''
+        return x1_out, x2_out, x3_out, x4_out
 
 
-'''class FAMFusion(nn.Module):
-
-    def __init__(self, cnn_dim, dino_dim, dim=128, reduction=8):
-        super().__init__()
-        self.conv4 = nn.Conv2d(cnn_dim, dim, kernel_size=1, bias=False)   # C 投影
-        self.conv5 = nn.Conv2d(dino_dim, dim, kernel_size=1, bias=False)  # T 投影
-        self.conv6 = nn.Conv2d(dim, dim, kernel_size=1, bias=False)       # 调制 C
-        self.conv7 = nn.Conv2d(dim, dim, kernel_size=1, bias=False)       # 调制 T
-        self.conv8 = nn.Conv2d(dim * 4, dim, kernel_size=1, bias=False)   # 三路融合输出
-
-        # 零初始化：训练初期 FAM 退化为 concat+SE+1x1，稳定后再学习双向交互
-        nn.init.zeros_(self.conv6.weight)
-        nn.init.zeros_(self.conv7.weight)
-
-        # 联合通道注意力（SE）
-        self.se = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(dim * 2, max(dim * 2 // reduction, 8), kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(max(dim * 2 // reduction, 8), dim * 2, kernel_size=1),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, C, T):
-        c = self.conv4(C)                # [B, dim, H, W]
-        t = self.conv5(T)                # [B, dim, H, W]
-        A = torch.softmax(c * t, dim=1)  # 通道维 softmax 的交叉相关权重
-        Cp = A * self.conv6(c) + c       # CNN 被 Transformer 调制（残差）
-        Tp = A * self.conv7(t) + t       # Transformer 被 CNN 调制（残差）
-        CT = self.se(torch.cat([c, t], dim=1)) * torch.cat([c, t], dim=1)
-        return self.conv8(torch.cat([Cp, Tp, CT], dim=1))'''
 
 class Encoder(nn.Module):
     def __init__(
@@ -289,8 +322,8 @@ class Encoder(nn.Module):
             beta_mode="contextgatedconv",
             dino_weight="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
             device="cuda",
-            # extract_ids=[5,11,17,23],
-            extract_ids=list(range(24)),
+            extract_ids=[5, 11, 17, 23],
+            # extract_ids=list(range(24)),
             **kwargs,
     ):
         super().__init__()
@@ -304,6 +337,7 @@ class Encoder(nn.Module):
                 nn.ReLU(inplace=True),
             ) for i in range(4)
         ])
+
         '''self.fpn = FPN(
             in_channels=self.backbone.channels[-4:],
             out_channels=fpn_channels,
@@ -314,7 +348,7 @@ class Encoder(nn.Module):
         dense_out_dim = fpn_channels * 2
         self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids)
 
-        self.groupweight = GroupWeightFusion(num_groups=4, layers_per_group=6)
+        # self.groupweight = GroupWeightFusion(num_groups=4, layers_per_group=6)
 
         self.defect_adapter = LinearAdapter(
             in_dim=1024,
@@ -322,18 +356,11 @@ class Encoder(nn.Module):
             sizes=(128, 64, 32, 16)
         )
 
-        self.defect_adapter = ViTAdapterLike(
-            cnn_dim=fpn_channels,  # 128
-            dino_dim=1024,  # DINO 原始维度
-            out_dim=fpn_channels,  # 256
-            num_scales=4
-        )
-
         self.pff = PyramidFeatureFusion(
-            in_dims=[fpn_channels] * 4,
+            in_dims=[128, 128, 128, 128],
             dense_dim=1024,
-            patch_size=self.dino.patch_size,
-            hidden_dim=dense_out_dim,
+            patch_size=16,
+            hidden_dim=256,
         )
 
         # 实例化 4 个尺度的 SFHM 模块
@@ -341,14 +368,6 @@ class Encoder(nn.Module):
             SFHM(in_dim=fpn_channels) for _ in range(4)
         ])
         # ===============================================================
-
-        '''self.fam_modules = nn.ModuleList([
-            FAMFusion(
-                cnn_dim=fpn_channels,      # CNN 分支：128
-                dino_dim=dense_out_dim,    # DINO 适配后：256
-                dim=fpn_channels,          # 统一交互维度
-            ) for _ in range(4)
-        ])'''
 
         dino_adapted_ch = fpn_channels * 2
 
@@ -359,35 +378,30 @@ class Encoder(nn.Module):
             ) for _ in range(4)
         ])
 
-
     def forward(self, x):
-
         fea = self.backbone(x)
         # fea = self.fpn(fea[-4:])    # channel：128  size:64,32,16,8
         fea = [self.cnn_proj[i](fea[i]) for i in range(4)]
-
-        enhanced_feas = []
-        for i in range(4):
-            enhanced_feas.append(self.sfhm_modules[i](fea[i]))
+        # fea = fea[0:4]
 
         raw_ds_fea = self.dino(x)  # 获取24层
 
-        ds_fea = self.groupweight(raw_ds_fea)
+        # ds_fea = self.groupweight(raw_ds_fea)
 
-        # ds_fea_adapted = self.defect_adapter(ds_fea)
-        final_fea = self.defect_adapter(fea, ds_fea)
+        ds_fea_adapted = self.defect_adapter(raw_ds_fea)
 
-        '''enhanced_feas = []
+        enhanced_feas = []
 
         for i in range(4):
             sfhm_out = self.sfhm_modules[i](fea[i])
             gate = self.dino_gates[i](ds_fea_adapted[i])
             gated_sfhm_out = sfhm_out * gate
-            enhanced_feas.append(gated_sfhm_out)'''
+            enhanced_feas.append(gated_sfhm_out)
 
-        # final_fea = self.pff(fea, ds_fea_adapted)
+        final_fea = self.pff(enhanced_feas, ds_fea_adapted)
 
         return final_fea
+
 
 class FuseGated(nn.Module):
     def __init__(self, dim):

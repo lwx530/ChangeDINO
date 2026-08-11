@@ -5,6 +5,8 @@ import re
 from dinov3.utils.utils import cat_keep_shapes, uncat_with_shapes
 from einops import rearrange
 from mmcv.ops import MultiScaleDeformableAttention
+import math
+
 
 REPO_DIR = "dinov3"
 DINO_NAME = "dinov3_vitl16"
@@ -21,87 +23,6 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 from mmcv.ops import MultiScaleDeformableAttention
-
-
-class SpatialPriorCrossAttention(nn.Module):
-    def __init__(self, cnn_dim=128, dino_dim=1024, embed_dim=256, num_heads=8, num_points=4):
-        super().__init__()
-
-        # 1. 维度映射
-        self.q_proj = nn.Conv2d(cnn_dim, embed_dim, kernel_size=1)
-        # 传统注意力的 K 在这里被省略了，Deformable Attn 直接从 Query 预测偏移量，只对 V 采样
-        self.v_proj = nn.Conv2d(dino_dim, embed_dim, kernel_size=1)
-
-        # 2. 引入 MMCV 的可变形注意力核心算子
-        # 此时只处理单层尺度的跨模态对齐，因此 num_levels=1
-        self.deform_attn = MultiScaleDeformableAttention(
-            embed_dims=embed_dim,
-            num_heads=num_heads,
-            num_levels=1,
-            num_points=num_points,
-            batch_first=True
-        )
-
-        # 3. 输出特征的平滑与对齐
-        self.out_proj = nn.Sequential(
-            nn.Conv2d(embed_dim, embed_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(embed_dim),
-            nn.ReLU(inplace=True)
-        )
-
-    def get_reference_points(self, H_q, W_q, device):
-        """
-        生成查询向量 (Query) 的归一化参考点坐标。
-        它指示了 CNN 特征图上的每个像素，应该去 DINO 特征图的大致对应位置开始搜寻。
-        """
-        ref_y, ref_x = torch.meshgrid(
-            torch.linspace(0.5, H_q - 0.5, H_q, dtype=torch.float32, device=device) / H_q,
-            torch.linspace(0.5, W_q - 0.5, W_q, dtype=torch.float32, device=device) / W_q,
-            indexing='ij'
-        )
-        # 变形要求: [Batch(1), H*W, Levels(1), 2(x, y)]
-        ref = torch.stack((ref_x, ref_y), dim=-1).reshape(1, H_q * W_q, 1, 2)
-        return ref
-
-    def forward(self, cnn_feat, dino_feat):
-        B, _, H_c, W_c = cnn_feat.shape
-        _, _, H_d, W_d = dino_feat.shape
-
-        # 1. 生成 Query 和 Value
-        Q = self.q_proj(cnn_feat)
-        V = self.v_proj(dino_feat)
-
-        # 2. 形状展平适应 Transformer 输入: [B, C, H, W] -> [B, H*W, C]
-        Q_flat = rearrange(Q, 'b c h w -> b (h w) c')
-        V_flat = rearrange(V, 'b c h w -> b (h w) c')
-
-        # 3. 构造 Deformable Attention 需要的元数据
-        # 参考点：复制到对应的 Batch Size
-        reference_points = self.get_reference_points(H_c, W_c, Q.device).repeat(B, 1, 1, 1)
-
-        # Value 的空间形状和级别的起始索引
-        spatial_shapes = torch.as_tensor([[H_d, W_d]], dtype=torch.long, device=Q.device)
-        level_start_index = torch.zeros((1,), dtype=torch.long, device=Q.device)
-
-        # 4. 执行可变形交叉注意力计算
-        attn_out = self.deform_attn(
-            query=Q_flat,
-            key=None,
-            value=V_flat,
-            identity=None,
-            query_pos=None,
-            key_padding_mask=None,
-            reference_points=reference_points,
-            spatial_shapes=spatial_shapes,
-            level_start_index=level_start_index
-        )
-
-        # 5. 还原空间维度并执行残差连接
-        attn_out = rearrange(attn_out, 'b (h w) c -> b c h w', h=H_c, w=W_c)
-        out = self.out_proj(attn_out)
-
-        # CNN 特征残差融入网络
-        return out + Q
 
 class BottleneckAdapter(nn.Module):
     """传统的 降维-激活-升维 Adapter"""
@@ -187,11 +108,65 @@ def apply_bottleneck_adapter_to_dinov3(dinov3_model, target_layers, dim=1024, bo
     return dinov3_model
 
 
+class LoRALinear(nn.Module):
+    """论文式 LoRA：冻结原 Linear，旁路加 (alpha/r) * B(A(x))，B 初始化为 0"""
+    def __init__(self, base: nn.Linear, r: int = 8, alpha: float = 16.0, dropout: float = 0.0):
+        super().__init__()
+        self.base = base
+        in_f, out_f = base.in_features, base.out_features
+        self.in_features = in_f
+        self.out_features = out_f
+        self.bias = base.bias
+        self.r = r
+        self.alpha = alpha
+        self.scale = alpha / max(1, r)                 # 16/8 = 2
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        if r > 0:
+            self.lora_A = nn.Linear(in_f, r, bias=False)
+            self.lora_B = nn.Linear(r, out_f, bias=False)
+            nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
+            nn.init.zeros_(self.lora_B.weight)          # 起步等于原模型
+        else:
+            self.lora_A = None
+            self.lora_B = None
+        for p in self.base.parameters():
+            p.requires_grad = False                     # base 冻结
+        try:
+            dev = next(self.base.parameters()).device
+            self.to(dev)
+        except StopIteration:
+            pass
+
+    def forward(self, x):
+        out = self.base(x)
+        if self.r > 0 and self.lora_A is not None and self.lora_B is not None:
+            if self.lora_A.weight.device != x.device:
+                self.lora_A.to(x.device)
+                self.lora_B.to(x.device)
+            out = out + self.scale * self.lora_B(self.dropout(self.lora_A(x)))
+        return out
+
+
+def apply_lora_to_dinov3(model, target_layers=None, rank=8, alpha=16.0, dropout=0.0):
+    """给 DINOv3 每个 block 的 attn.qkv/proj 和 mlp.fc1/fc2 挂 LoRA"""
+    if target_layers is None:
+        target_layers = list(range(len(model.blocks)))
+    for i in target_layers:
+        if i >= len(model.blocks):
+            continue
+        blk = model.blocks[i]
+        blk.attn.qkv = LoRALinear(blk.attn.qkv, r=rank, alpha=alpha, dropout=dropout)
+        blk.attn.proj = LoRALinear(blk.attn.proj, r=rank, alpha=alpha, dropout=dropout)
+        blk.mlp.fc1 = LoRALinear(blk.mlp.fc1, r=rank, alpha=alpha, dropout=dropout)
+        blk.mlp.fc2 = LoRALinear(blk.mlp.fc2, r=rank, alpha=alpha, dropout=dropout)
+    return model
+
+
 class DINOV3Wrapper(nn.Module):
     def __init__(
         self,
         weights_path="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
-        extract_ids=list(range(24)),
+        extract_ids=[5, 11, 17, 23],
         device="cuda",
     ):
         super().__init__()
@@ -213,19 +188,17 @@ class DINOV3Wrapper(nn.Module):
         for p in self.model.parameters():
             p.requires_grad = False
 
-        target_layers = [6, 8, 10, 12, 14, 16, 18, 20]
-
-        apply_bottleneck_adapter_to_dinov3(
+        # 论文式 LoRA：24 个 block 全部注入（qkv/proj/fc1/fc2），r=8, alpha=16
+        apply_lora_to_dinov3(
             self.model,
-            target_layers=target_layers,
-            dim=1024,
-            bottleneck_dim=64,  # 你可以根据显存调整，通常 64 或 128
-            use_attn=False,
-            use_mlp=True
+            target_layers=list(range(self.n_layers)),  # 0..23 全部
+            rank=8,
+            alpha=16.0,
+            dropout=0.0,
         )
 
         for name, p in self.model.named_parameters():
-            if "adapter" in name:
+            if "lora" in name:
                 p.requires_grad = True
 
     def forward(self, x):
@@ -233,39 +206,17 @@ class DINOV3Wrapper(nn.Module):
             x, size=(512, 512), mode="bilinear", align_corners=True, antialias=True
         )
 
-        with torch.autocast(device_type=self.device, dtype=torch.float32):
+        with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
             feats = self.model.get_intermediate_layers(
                 x, n=range(self.n_layers), reshape=True, norm=True
             )
             feats_ = []
             for i in range(len(self.extract_ids)):
-                feats_.append(feats[self.extract_ids[i]])  # [B, N, C]
+                feats_.append(feats[self.extract_ids[i]].float())  # 关键：转回 fp32
 
-        return feats
+        return feats_
 
-class ViTAdapterLike(nn.Module):
-    def __init__(self, cnn_dim=128, dino_dim=1024, out_dim=256, num_scales=4):
-        super().__init__()
-        # 为4个不同的尺度分别实例化交叉注意力模块
-        self.cross_attns = nn.ModuleList([
-            SpatialPriorCrossAttention(
-                cnn_dim=cnn_dim,
-                dino_dim=dino_dim,
-                embed_dim=out_dim
-            ) for _ in range(num_scales)
-        ])
 
-    def forward(self, cnn_feats, dino_feats):
-        """
-        cnn_feats: list of 4 tensors from ResNet [B, 128, H_i, W_i]
-        dino_feats: list of 4 tensors from DINO GroupWeightFusion [B, 1024, H_d, W_d]
-        """
-        outs = []
-        for i in range(len(cnn_feats)):
-            # 用 cnn_feats[i] 的空间分辨率，去重塑 dino_feats[i] 的信息
-            adapted_feat = self.cross_attns[i](cnn_feats[i], dino_feats[i])
-            outs.append(adapted_feat)
-        return outs
 
 class LinearAdapter(nn.Module):
 
