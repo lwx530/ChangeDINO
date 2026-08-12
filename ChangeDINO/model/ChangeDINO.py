@@ -380,9 +380,8 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         fea = self.backbone(x)
-        # fea = self.fpn(fea[-4:])    # channel：128  size:64,32,16,8
+
         fea = [self.cnn_proj[i](fea[i]) for i in range(4)]
-        # fea = fea[0:4]
 
         raw_ds_fea = self.dino(x)  # 获取24层
 
@@ -390,15 +389,15 @@ class Encoder(nn.Module):
 
         ds_fea_adapted = self.defect_adapter(raw_ds_fea)
 
-        enhanced_feas = []
+        '''enhanced_feas = []
 
         for i in range(4):
             sfhm_out = self.sfhm_modules[i](fea[i])
             gate = self.dino_gates[i](ds_fea_adapted[i])
             gated_sfhm_out = sfhm_out * gate
-            enhanced_feas.append(gated_sfhm_out)
+            enhanced_feas.append(gated_sfhm_out)'''
 
-        final_fea = self.pff(enhanced_feas, ds_fea_adapted)
+        final_fea = self.pff(fea, ds_fea_adapted)
 
         return final_fea
 
