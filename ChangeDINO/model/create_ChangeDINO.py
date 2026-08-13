@@ -69,7 +69,7 @@ class Model(nn.Module):
 
         hybrid = loss1
 
-        loss = hybrid + boundary
+        loss = hybrid + 0.2 * boundary
 
         return pred1, loss
 

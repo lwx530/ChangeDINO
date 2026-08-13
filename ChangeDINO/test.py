@@ -42,18 +42,18 @@ if __name__ == "__main__":
             img_tensor = _data["image"].cuda()  # 原图张量 [B,3,H,W]
             val_pred = model.inference(_data["image"].cuda())
             # 替换为 TTA (水平翻转增强)：
-            # img_tensor = _data["image"].cuda()
+            '''img_tensor = _data["image"].cuda()
 
             # 1. 正常推理
-            # pred_normal = model.inference(img_tensor)
+            pred_normal = model.inference(img_tensor)
 
             # 2. 图像水平翻转后推理，再把结果翻转回来
-            # img_flipped = torch.flip(img_tensor, dims=[3])
-            # pred_flipped = model.inference(img_flipped)
-            # pred_flipped = torch.flip(pred_flipped, dims=[3])
+            img_flipped = torch.flip(img_tensor, dims=[3])
+            pred_flipped = model.inference(img_flipped)
+            pred_flipped = torch.flip(pred_flipped, dims=[3])
 
             # 3. 概率融合（平均）
-            # val_pred = (pred_normal + pred_flipped) / 2.0
+            val_pred = (pred_normal + pred_flipped) / 2.0'''
             # update metric
 
 
