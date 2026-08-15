@@ -202,8 +202,8 @@ class Trainval(object):
 
 if __name__ == "__main__":
     opt = Options().parse()
-    setup_seed(seed=1)
     trainval = Trainval(opt)
+    setup_seed(seed=1)
     start_epoch = 1
     if opt.resume:
         start_epoch, trainval.previous_best = trainval.model.resume_latest()

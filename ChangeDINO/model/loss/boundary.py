@@ -48,50 +48,8 @@ class BoundaryLoss(nn.Module):
         # 只要有梯度变化的地方，就是物理边缘
         target_boundary = (temp_edge > 0).float()
 
-        # ==================== 可视化截流代码 ====================
-        '''if not self.has_saved_debug:
-            os.makedirs('debug_edge_1', exist_ok=True)
-            vutils.save_image(target[:8], 'debug_edge_1/1_original_gt.png', normalize=True)
-            # 保存这种新方法生成的边缘 GT
-            vutils.save_image(target_boundary[:8], 'debug_edge_1/2_gradient_edge_gt.png', normalize=True)
-            print("\n📸 [Debug] 梯度法边缘 GT 截获成功！快去对比看看它和之前的形态学边缘有什么区别！")
-            self.has_saved_debug = True'''
-        # ==============================================================
-
         # 让 SRF 模块逼近这个完美清晰的梯度边缘
         # loss = F.mse_loss(pred, target_boundary)
         loss = F.binary_cross_entropy_with_logits(pred, target_boundary)
 
         return loss
-
-'''class BoundaryLoss(nn.Module):
-    """
-        可导形态学边界损失 (Differentiable Morphological Boundary Loss)
-        无需 numpy 转换，全 GPU 加速，梯度完美回传，数值严格在 0~1 之间。
-        """
-
-    def __init__(self, kernel_size=5):
-        super(BoundaryLoss, self).__init__()
-        self.kernel_size = kernel_size
-
-    def forward(self, pred, target):
-        target = target.float()
-
-        # 1. 提取真实的缺陷物理边界 (形态学梯度 = 膨胀 - 腐蚀)
-        # 用 MaxPool 模拟膨胀 (Dilation)
-        target_dilated = F.max_pool2d(
-            target, kernel_size=self.kernel_size, stride=1, padding=self.kernel_size // 2
-        )
-        # 用 负的MaxPool 模拟腐蚀 (Erosion)
-        target_eroded = -F.max_pool2d(
-            -target, kernel_size=self.kernel_size, stride=1, padding=self.kernel_size // 2
-        )
-
-        # 真实的边缘区域 (1 表示边缘，0 表示非边缘)
-        target_boundary = target_dilated - target_eroded
-
-        # 2. 让 SRF 模块预测出的 edge_mask 逼近这个真实的物理边界
-        # 此时 pred 和 target_boundary 都在 0~1 之间，MSE 算出来一般只有 0.0x 到 0.x
-        loss = F.mse_loss(pred, target_boundary)
-
-        return loss'''
