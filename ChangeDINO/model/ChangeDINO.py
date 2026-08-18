@@ -402,74 +402,6 @@ class Encoder(nn.Module):
         return final_fea
 
 
-class SemanticBoundaryGenerator(nn.Module):
-    def __init__(self, dim=128):
-        super().__init__()
-
-        self.texture_edge = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=3, padding=1, groups=dim, bias=False),
-            nn.Conv2d(dim, dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(dim),
-            nn.ReLU(inplace=True)
-        )
-
-        self.semantic_suppress = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(dim),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(dim, dim, kernel_size=1, bias=True),
-            nn.Sigmoid()
-        )
-
-        self.boundary_fuse = nn.Sequential(
-            nn.Conv2d(dim * 2, dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(dim),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(dim, 1, kernel_size=1, bias=True)
-        )
-
-    def forward(self, shallow_fea, deep_fea):
-        deep_fea = F.interpolate(
-            deep_fea,
-            size=shallow_fea.shape[-2:],
-            mode="bilinear",
-            align_corners=False
-        )
-
-        candidate_edge = self.texture_edge(shallow_fea)
-        semantic_gate = self.semantic_suppress(deep_fea)
-
-        defect_edge_fea = candidate_edge * semantic_gate
-
-        edge_logit = self.boundary_fuse(
-            torch.cat([defect_edge_fea, deep_fea], dim=1)
-        )
-
-        return edge_logit
-
-
-class BoundaryGuidedRefine(nn.Module):
-    def __init__(self, dim=128):
-        super().__init__()
-        self.alpha = nn.Parameter(torch.tensor(0.5))
-
-        self.refine = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(dim),
-            nn.SiLU(inplace=True)
-        )
-
-    def forward(self, x, edge_logit):
-        edge = torch.sigmoid(edge_logit)
-        edge = F.interpolate(
-            edge,
-            size=x.shape[-2:],
-            mode="bilinear",
-            align_corners=False
-        )
-
-        x = x * (1.0 + self.alpha * edge)
-        return self.refine(x)
 
 class FuseGated(nn.Module):
     def __init__(self, dim):
@@ -490,6 +422,55 @@ class FuseGated(nn.Module):
         fused = x2 + g * x1
         return self.mix(fused)
 
+class EdgeRecurrentCalib(nn.Module):
+    def __init__(self, dim=128):
+        super().__init__()
+
+        self.edge_update = nn.Sequential(
+            nn.Conv2d(dim * 3, dim, 3, padding=1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dim, dim, 3, padding=1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+        )
+
+        self.position_gate = nn.Sequential(
+            nn.Conv2d(dim, 1, 1),
+            nn.Sigmoid()
+        )
+
+        self.feature_refine = nn.Sequential(
+            nn.Conv2d(dim, dim, 3, padding=1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x, edge_base, edge_prev=None):
+        if edge_prev is None:
+            edge_prev = edge_base
+        else:
+            edge_prev = F.interpolate(
+                edge_prev,
+                size=x.shape[-2:],
+                mode="bilinear",
+                align_corners=False
+            )
+
+        edge_base = F.interpolate(
+            edge_base,
+            size=x.shape[-2:],
+            mode="bilinear",
+            align_corners=False
+        )
+
+        edge_cur = self.edge_update(torch.cat([x, edge_base, edge_prev], dim=1))
+        pos = self.position_gate(edge_cur)
+
+        x_calib = x * (1.0 + pos)
+        x_calib = self.feature_refine(x_calib + edge_cur)
+
+        return x_calib, edge_cur
 
 class Detector(nn.Module):
     def __init__(
@@ -529,51 +510,49 @@ class Detector(nn.Module):
             LayerNorm_type="BiasFree")
 
         self.conv4 = nn.Sequential(
-            nn.Conv2d(fpn_channels + 1, fpn_channels, kernel_size=1, bias=False),
+            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
             nn.BatchNorm2d(fpn_channels),
             nn.ReLU(inplace=True)
         )
         self.conv3 = nn.Sequential(
-            nn.Conv2d(fpn_channels + 1, fpn_channels, kernel_size=1, bias=False),
+            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
             nn.BatchNorm2d(fpn_channels),
             nn.ReLU(inplace=True)
         )
         self.conv2 = nn.Sequential(
-            nn.Conv2d(fpn_channels + 1, fpn_channels, kernel_size=1, bias=False),
+            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
             nn.BatchNorm2d(fpn_channels),
             nn.ReLU(inplace=True)
         )
         self.conv1 = nn.Sequential(
-            nn.Conv2d(fpn_channels + 1, fpn_channels, kernel_size=1, bias=False),
+            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
             nn.BatchNorm2d(fpn_channels),
             nn.ReLU(inplace=True)
         )
 
-        # self.edge = EdgeExtraction(in_channels=fpn_channels)
+        self.edge_calib4 = EdgeRecurrentCalib(fpn_channels)
+        self.edge_calib3 = EdgeRecurrentCalib(fpn_channels)
+        self.edge_calib2 = EdgeRecurrentCalib(fpn_channels)
+        self.edge_calib1 = EdgeRecurrentCalib(fpn_channels)
 
-        self.boundary_generator = SemanticBoundaryGenerator(dim=fpn_channels)
-
-        self.bgr4 = BoundaryGuidedRefine(dim=fpn_channels)
-        self.bgr3 = BoundaryGuidedRefine(dim=fpn_channels)
-        self.bgr2 = BoundaryGuidedRefine(dim=fpn_channels)
-        self.bgr1 = BoundaryGuidedRefine(dim=fpn_channels)
+        self.edge = EdgeExtraction(in_channels=fpn_channels)
 
         self.p4_head = ConvOut(128)
         self.p3_head = ConvOut(128)
         self.p2_head = ConvOut(128)
         self.p1_head = ConvOut(128)
 
-        # self.conv5 = nn.Conv2d(fpn_channels, 1, kernel_size=1, bias=False)
+        self.conv5 = nn.Conv2d(fpn_channels, 1, kernel_size=1, bias=False)
 
     def forward(self, xs):
 
         fea1, fea2, fea3, fea4 = xs
 
-        '''fea4_up = F.interpolate(fea4, size=(128, 128), mode="bilinear", align_corners=False)
+        fea4_up = F.interpolate(fea4, size=(128, 128), mode="bilinear", align_corners=False)
         edge_input = fea1 + fea4_up
         edge_mask = self.edge(edge_input)
 
-        edge_mask_4 = F.interpolate(edge_mask, size=(16, 16), mode="bilinear", align_corners=False)
+        '''edge_mask_4 = F.interpolate(edge_mask, size=(16, 16), mode="bilinear", align_corners=False)
         fea4E = torch.cat([edge_mask_4, fea4], dim=1)
         t4 = self.conv4(fea4E)
         fea4D = self.tb4(t4)
@@ -593,72 +572,47 @@ class Detector(nn.Module):
         t1 = self.conv1(fea1E)
         fea1D = self.tb1(self.p2_to_p1(fea2D, t1))'''
 
-        edge_mask = self.boundary_generator(fea1, fea4)
-
-        edge_mask_4 = F.interpolate(
-            edge_mask,
-            size=fea4.shape[-2:],
-            mode="bilinear",
-            align_corners=False
-        )
+        edge_mask_4 = F.interpolate(edge_mask, size=(16, 16), mode="bilinear", align_corners=False)
         fea4E = torch.cat([edge_mask_4, fea4], dim=1)
         t4 = self.conv4(fea4E)
-        t4 = self.bgr4(t4, edge_mask)
+
+        t4, edge4 = self.edge_calib4(t4, edge_mask_4, None)
+
         fea4D = self.tb4(t4)
 
-        edge_mask_3 = F.interpolate(
-            edge_mask,
-            size=fea3.shape[-2:],
-            mode="bilinear",
-            align_corners=False
-        )
+        edge_mask_3 = F.interpolate(edge_mask, size=(32, 32), mode="bilinear", align_corners=False)
         fea3E = torch.cat([edge_mask_3, fea3], dim=1)
         t3 = self.conv3(fea3E)
-        t3 = self.bgr3(t3, edge_mask)
+
+        t3, edge3 = self.edge_calib3(t3, edge_mask_3, edge4)
+
         fea3D = self.tb3(self.p4_to_p3(fea4D, t3))
 
-        edge_mask_2 = F.interpolate(
-            edge_mask,
-            size=fea2.shape[-2:],
-            mode="bilinear",
-            align_corners=False
-        )
+        edge_mask_2 = F.interpolate(edge_mask, size=(64, 64), mode="bilinear", align_corners=False)
         fea2E = torch.cat([edge_mask_2, fea2], dim=1)
         t2 = self.conv2(fea2E)
-        t2 = self.bgr2(t2, edge_mask)
+
+        t2, edge2 = self.edge_calib2(t2, edge_mask_2, edge3)
+
         fea2D = self.tb2(self.p3_to_p2(fea3D, t2))
 
-        edge_mask_1 = F.interpolate(
-            edge_mask,
-            size=fea1.shape[-2:],
-            mode="bilinear",
-            align_corners=False
-        )
+        edge_mask_1 = F.interpolate(edge_mask, size=(128, 128), mode="bilinear", align_corners=False)
         fea1E = torch.cat([edge_mask_1, fea1], dim=1)
         t1 = self.conv1(fea1E)
-        t1 = self.bgr1(t1, edge_mask)
+
+        t1, edge1 = self.edge_calib1(t1, edge_mask_1, edge2)
+
         fea1D = self.tb1(self.p2_to_p1(fea2D, t1))
 
-        '''pred_p4 = self.p4_head(fea4D)
-        pred_p3 = self.p3_head(fea3D)
-        pred_p2 = self.p2_head(fea2D)'''
         pred_p1 = self.p1_head(fea1D)
 
         # 3. 上采样到统一尺寸
         pred_p1 = F.interpolate(
             pred_p1, size=(256, 256), mode="bilinear", align_corners=False
         )
-        '''pred_p2 = F.interpolate(
-            pred_p2, size=(256, 256), mode="bilinear", align_corners=False
-        )
-        pred_p3 = F.interpolate(
-            pred_p3, size=(256, 256), mode="bilinear", align_corners=False
-        )
-        pred_p4 = F.interpolate(
-            pred_p4, size=(256, 256), mode="bilinear", align_corners=False
-        )'''
 
         # edge_mask = self.conv5(edge_mask)
+        edge_mask = self.conv5(edge_mask)
 
         return pred_p1, edge_mask
 
