@@ -26,57 +26,7 @@ class EdgeExtraction(nn.Module):
     def forward(self, x):
         return self.edge(x)
 
-'''class EdgeExtraction(nn.Module):
-    def __init__(self, in_channels=128):
-        super().__init__()
 
-        # 1. 常规分支：3x3卷积
-        # 兜底捕获各向同性斑点和整体轮廓
-        self.branch_normal = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(in_channels)
-        )
-
-        # 2. 水平条形分支：1x3卷积
-        # 提取垂直走向的细长边缘
-        self.branch_horizontal = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, kernel_size=(1, 3), padding=(0, 1), bias=False),
-            nn.BatchNorm2d(in_channels)
-        )
-
-        # 3. 垂直条形分支：3x1卷积
-        # 提取水平走向的细长边缘
-        self.branch_vertical = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, kernel_size=(3, 1), padding=(1, 0), bias=False),
-            nn.BatchNorm2d(in_channels)
-        )
-
-        self.relu = nn.ReLU(inplace=True)
-
-        # 4. 融合与降维层
-        # 拼接后通道数为 in_channels * 3，通过 1x1 卷积降维回 in_channels
-        # 这里的 1x1 卷积起到了“跨通道注意力”的作用，自适应过滤噪声通道
-        self.fusion = nn.Sequential(
-            nn.Conv2d(in_channels * 3, in_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(in_channels),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, x):
-        # 分别提取三种感受野的特征
-        edge_normal = self.branch_normal(x)
-        edge_h = self.branch_horizontal(x)
-        edge_v = self.branch_vertical(x)
-
-        # 在通道维度 (dim=1) 进行拼接 Concat
-        # 形状从 [B, C, H, W] 变为 [B, 3C, H, W]
-        concat_edge = torch.cat([edge_normal, edge_h, edge_v], dim=1)
-        concat_edge = self.relu(concat_edge)
-
-        # 通过 1x1 卷积自适应融合特征并降维回 [B, C, H, W]
-        out = self.fusion(concat_edge)
-
-        return out'''
 
 class DsBnRelu(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, dilation=1):
@@ -95,21 +45,6 @@ class DsBnRelu(nn.Module):
         x = self.bn(x)
         x = self.relu(x)
         return x
-
-
-class GroupWeightFusion(nn.Module):
-    def __init__(self, num_groups=4, layers_per_group=6):
-        super().__init__()
-        self.weights = nn.Parameter(torch.ones(num_groups, layers_per_group))
-
-    def forward(self, all_feats):  # 24个特征
-        outs = []
-        for g in range(4):
-            group = all_feats[g * 6: (g + 1) * 6]  # 6个[B,N,C]
-            w = F.softmax(self.weights[g], dim=-1)  # 可学习权重
-            weighted = sum(group[i] * w[i] for i in range(6))
-            outs.append(weighted)
-        return outs  # 4个group
 
 
 def get_backbone(backbone_name):
@@ -311,6 +246,45 @@ class PyramidFeatureFusion(nn.Module):
         return x1_out, x2_out, x3_out, x4_out
 
 
+class DINOguidedNoiseSuppress(nn.Module):
+    def __init__(self, cnn_dim=128, dino_dim=256):
+        super().__init__()
+
+        self.gates = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(cnn_dim + dino_dim, cnn_dim, kernel_size=1, bias=False),
+                nn.BatchNorm2d(cnn_dim),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(cnn_dim, 1, kernel_size=1, bias=True),
+                nn.Sigmoid()
+            )
+            for _ in range(4)
+        ])
+
+    def forward(self, cnn_feats, dino_feats):
+        outs = []
+
+        for i in range(4):
+            cnn = cnn_feats[i]
+            dino = dino_feats[i]
+
+            if dino.shape[-2:] != cnn.shape[-2:]:
+                dino = F.interpolate(
+                    dino,
+                    size=cnn.shape[-2:],
+                    mode="bilinear",
+                    align_corners=False
+                )
+
+            gate = self.gates[i](torch.cat([cnn, dino], dim=1))
+
+            # 保守抑制：避免一开始把 CNN 特征压没
+            clean = cnn * (0.5 + gate)
+
+            outs.append(clean)
+
+        return outs
+
 
 class Encoder(nn.Module):
     def __init__(
@@ -363,6 +337,11 @@ class Encoder(nn.Module):
             hidden_dim=256,
         )
 
+        self.noise_suppress = DINOguidedNoiseSuppress(
+            cnn_dim=fpn_channels,
+            dino_dim=dense_out_dim
+        )
+
         # 实例化 4 个尺度的 SFHM 模块
         self.sfhm_modules = nn.ModuleList([
             SFHM(in_dim=fpn_channels) for _ in range(4)
@@ -385,8 +364,6 @@ class Encoder(nn.Module):
 
         raw_ds_fea = self.dino(x)  # 获取24层
 
-        # ds_fea = self.groupweight(raw_ds_fea)
-
         ds_fea_adapted = self.defect_adapter(raw_ds_fea)
 
         '''enhanced_feas = []
@@ -396,6 +373,8 @@ class Encoder(nn.Module):
             gate = self.dino_gates[i](ds_fea_adapted[i])
             gated_sfhm_out = sfhm_out * gate
             enhanced_feas.append(gated_sfhm_out)'''
+
+        fea = self.noise_suppress(fea, ds_fea_adapted)
 
         final_fea = self.pff(fea, ds_fea_adapted)
 
@@ -422,57 +401,28 @@ class FuseGated(nn.Module):
         fused = x2 + g * x1
         return self.mix(fused)
 
-class EdgeRecurrentCalib(nn.Module):
-    def __init__(self, dim=128):
+class DecoderConvBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, dilation=2):
         super().__init__()
 
-        self.edge_update = nn.Sequential(
-            nn.Conv2d(dim * 3, dim, 3, padding=1, bias=False),
-            nn.BatchNorm2d(dim),
+        self.block = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=dilation, dilation=dilation, bias=False),
+            nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
-            nn.Conv2d(dim, dim, 3, padding=1, bias=False),
-            nn.BatchNorm2d(dim),
+
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
-        )
 
-        self.position_gate = nn.Sequential(
-            nn.Conv2d(dim, 1, 1),
-            nn.Sigmoid()
-        )
-
-        self.feature_refine = nn.Sequential(
-            nn.Conv2d(dim, dim, 3, padding=1, bias=False),
-            nn.BatchNorm2d(dim),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
         )
 
-    def forward(self, x, edge_base, edge_prev=None):
-        if edge_prev is None:
-            edge_prev = edge_base
-        else:
-            edge_prev = F.interpolate(
-                edge_prev,
-                size=x.shape[-2:],
-                mode="bilinear",
-                align_corners=False
-            )
+    def forward(self, x):
+        return x + self.block(x)
 
-        edge_base = F.interpolate(
-            edge_base,
-            size=x.shape[-2:],
-            mode="bilinear",
-            align_corners=False
-        )
-
-        edge_cur = self.edge_update(torch.cat([x, edge_base, edge_prev], dim=1))
-        pos = self.position_gate(edge_cur)
-
-        x_calib = x * (1.0 + pos)
-        x_calib = self.feature_refine(x_calib + edge_cur)
-
-        return x_calib, edge_cur
-
-class Detector(nn.Module):
+class Decoder(nn.Module):
     def __init__(
             self,
             fpn_channels=128,
@@ -530,10 +480,8 @@ class Detector(nn.Module):
             nn.ReLU(inplace=True)
         )
 
-        self.edge_calib4 = EdgeRecurrentCalib(fpn_channels)
-        self.edge_calib3 = EdgeRecurrentCalib(fpn_channels)
-        self.edge_calib2 = EdgeRecurrentCalib(fpn_channels)
-        self.edge_calib1 = EdgeRecurrentCalib(fpn_channels)
+        self.convD2 = DecoderConvBlock(fpn_channels, fpn_channels, dilation=2)
+        self.convD1 = DecoderConvBlock(fpn_channels, fpn_channels, dilation=1)
 
         self.edge = EdgeExtraction(in_channels=fpn_channels)
 
@@ -552,57 +500,25 @@ class Detector(nn.Module):
         edge_input = fea1 + fea4_up
         edge_mask = self.edge(edge_input)
 
-        '''edge_mask_4 = F.interpolate(edge_mask, size=(16, 16), mode="bilinear", align_corners=False)
-        fea4E = torch.cat([edge_mask_4, fea4], dim=1)
-        t4 = self.conv4(fea4E)
-        fea4D = self.tb4(t4)
-
-        edge_mask_3 = F.interpolate(edge_mask, size=(32, 32), mode="bilinear", align_corners=False)
-        fea3E = torch.cat([edge_mask_3, fea3], dim=1)
-        t3 = self.conv3(fea3E)
-        fea3D = self.tb3(self.p4_to_p3(fea4D, t3))
-
-        edge_mask_2 = F.interpolate(edge_mask, size=(64, 64), mode="bilinear", align_corners=False)
-        fea2E = torch.cat([edge_mask_2, fea2], dim=1)
-        t2 = self.conv2(fea2E)
-        fea2D = self.tb2(self.p3_to_p2(fea3D, t2))
-
-        edge_mask_1 = F.interpolate(edge_mask, size=(128, 128), mode="bilinear", align_corners=False)
-        fea1E = torch.cat([edge_mask_1, fea1], dim=1)
-        t1 = self.conv1(fea1E)
-        fea1D = self.tb1(self.p2_to_p1(fea2D, t1))'''
-
         edge_mask_4 = F.interpolate(edge_mask, size=(16, 16), mode="bilinear", align_corners=False)
         fea4E = torch.cat([edge_mask_4, fea4], dim=1)
         t4 = self.conv4(fea4E)
-
-        t4, edge4 = self.edge_calib4(t4, edge_mask_4, None)
-
         fea4D = self.tb4(t4)
 
         edge_mask_3 = F.interpolate(edge_mask, size=(32, 32), mode="bilinear", align_corners=False)
         fea3E = torch.cat([edge_mask_3, fea3], dim=1)
         t3 = self.conv3(fea3E)
-
-        t3, edge3 = self.edge_calib3(t3, edge_mask_3, edge4)
-
         fea3D = self.tb3(self.p4_to_p3(fea4D, t3))
 
         edge_mask_2 = F.interpolate(edge_mask, size=(64, 64), mode="bilinear", align_corners=False)
         fea2E = torch.cat([edge_mask_2, fea2], dim=1)
         t2 = self.conv2(fea2E)
-
-        t2, edge2 = self.edge_calib2(t2, edge_mask_2, edge3)
-
-        fea2D = self.tb2(self.p3_to_p2(fea3D, t2))
+        fea2D = self.convD2(self.p3_to_p2(fea3D, t2))
 
         edge_mask_1 = F.interpolate(edge_mask, size=(128, 128), mode="bilinear", align_corners=False)
         fea1E = torch.cat([edge_mask_1, fea1], dim=1)
         t1 = self.conv1(fea1E)
-
-        t1, edge1 = self.edge_calib1(t1, edge_mask_1, edge2)
-
-        fea1D = self.tb1(self.p2_to_p1(fea2D, t1))
+        fea1D = self.convD1(self.p2_to_p1(fea2D, t1))
 
         pred_p1 = self.p1_head(fea1D)
 
@@ -611,7 +527,6 @@ class Detector(nn.Module):
             pred_p1, size=(256, 256), mode="bilinear", align_corners=False
         )
 
-        # edge_mask = self.conv5(edge_mask)
         edge_mask = self.conv5(edge_mask)
 
         return pred_p1, edge_mask
@@ -621,17 +536,17 @@ class ChangeModel(nn.Module):
     def __init__(self, backbone="resnet34", fpn_channels=128, **kwargs):
         super().__init__()
         self.encoder = Encoder(backbone=backbone, fpn_channels=fpn_channels, **kwargs)
-        self.detector = Detector(fpn_channels=fpn_channels, **kwargs)
+        self.decoder = Decoder(fpn_channels=fpn_channels, **kwargs)
 
     @torch.inference_mode()
     def _forward(self, x):
         # for inference
         final_fea = self.encoder(x)
-        pred, _ = self.detector(final_fea)
+        pred, _ = self.decoder(final_fea)
         return pred
 
     def forward(self, x):
         # for training
         final_fea = self.encoder(x)
-        pred1, edge_mask = self.detector(final_fea)
+        pred1, edge_mask = self.decoder(final_fea)
         return pred1, edge_mask
