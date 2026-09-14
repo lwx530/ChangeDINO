@@ -56,15 +56,18 @@ if __name__ == "__main__":
             val_pred = (pred_normal + pred_flipped) / 2.0'''
             # update metric
 
+            # ===== 重新安全计算概率 =====
+            scale = 1.0
 
-            val_target = _data["label"].detach()
+            logits = val_pred.detach() * scale
 
-            '''# 1. 获取概率图
-            if val_pred.shape[1] == 2:
-                val_pred_prob = torch.softmax(val_pred.detach(), dim=1)[:, 1]
-                
+            if logits.shape[1] == 2:
+                probs = torch.softmax(logits, dim=1)
+                val_pred_prob = probs[:, 1, :, :]  # 明确取第2类
             else:
-                val_pred_prob = torch.sigmoid(val_pred.detach().squeeze(1))'''
+                val_pred_prob = torch.sigmoid(logits[:, 0, :, :])
+
+            '''val_target = _data["label"].detach()
 
             # ===== 重新安全计算概率 =====
             scale = 1.0
@@ -95,7 +98,23 @@ if __name__ == "__main__":
                 EM.step(pred_uint8, gt_uint8, normalize=True)
                 FM.step(pred_uint8, gt_uint8, normalize=True)
                 SM.step(pred_uint8, gt_uint8, normalize=True)
-                WFM.step(pred_uint8, gt_uint8, normalize=True)
+                WFM.step(pred_uint8, gt_uint8, normalize=True)'''
+
+            for j in range(val_pred_prob.shape[0]):
+                pred_np = val_pred_prob[j].cpu().numpy()
+
+                gt = Image.open(_data["label_path"][j]).convert("L")
+                gt_np = np.array(gt)
+
+                pred_img = Image.fromarray((pred_np * 255).astype(np.uint8))
+                pred_img = pred_img.resize(gt.size, resample=Image.BILINEAR)
+                pred_np = np.array(pred_img)
+
+                M.step(pred_np, gt_np, normalize=True)
+                EM.step(pred_np, gt_np, normalize=True)
+                FM.step(pred_np, gt_np, normalize=True)
+                SM.step(pred_np, gt_np, normalize=True)
+                WFM.step(pred_np, gt_np, normalize=True)
 
             if opt.save_test:
                 # 用概率图生成二值图

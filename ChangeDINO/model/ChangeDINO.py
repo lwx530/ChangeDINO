@@ -11,93 +11,6 @@ from .blocks.sfhm import SFHM
 from .backbone.mobilenetv2 import mobilenet_v2
 
 
-# ==================== 1. 2D Haar 小波变换与逆变换 ====================
-class DWT_2D(nn.Module):
-    """
-    可微 2D Haar 小波分解：将特征图分解为低频(LL)与水平(LH)、垂直(HL)、对角高频(HH)
-    """
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x):
-        # 降采样取样
-        x01 = x[:, :, 0::2, :] / 2.0
-        x02 = x[:, :, 1::2, :] / 2.0
-        x1 = x01[:, :, :, 0::2]
-        x2 = x02[:, :, :, 0::2]
-        x3 = x01[:, :, :, 1::2]
-        x4 = x02[:, :, :, 1::2]
-
-        # 计算 4 个子带
-        x_LL = x1 + x2 + x3 + x4
-        x_LH = -x1 - x3 + x2 + x4
-        x_HL = -x1 + x3 - x2 + x4
-        x_HH = x1 - x3 - x2 + x4
-
-        return x_LL, x_LH, x_HL, x_HH
-
-
-# ==================== 2. 多尺度上下文调制模块 (MSCM) ====================
-class MSCM(nn.Module):
-    """
-    借鉴 WPFormer：利用全局池化与局部空间卷积生成多尺度通道/空间注意力权重，压制高频背景噪声
-    """
-    def __init__(self, dim):
-        super().__init__()
-        self.gap = nn.AdaptiveAvgPool2d(1)
-        self.global_branch = nn.Sequential(
-            nn.Conv2d(dim, dim // 4, kernel_size=1, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(dim // 4, dim, kernel_size=1, bias=False)
-        )
-        self.local_branch = nn.Sequential(
-            nn.Conv2d(dim, dim // 4, kernel_size=1, bias=False),
-            nn.BatchNorm2d(dim // 4),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(dim // 4, dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(dim)
-        )
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        g = self.global_branch(self.gap(x))
-        l = self.local_branch(x)
-        return self.sigmoid(g + l)
-
-
-# ==================== 3. 小波高低频降噪调制模块 (WCA) ====================
-class WaveletContextEnhancer(nn.Module):
-    """
-    在浅层特征上分解高低频，高频经 MSCM 降噪后重新合成并以残差方式融入
-    """
-    def __init__(self, dim=128):
-        super().__init__()
-        self.dwt = DWT_2D()
-        self.mscm = MSCM(dim)
-        self.fuse = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(dim),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, x):
-        # 1. 2D Haar 分解
-        ll, lh, hl, hh = self.dwt(x)
-        high = lh + hl + hh  # 聚合多方向高频细节
-
-        # 2. 多尺度上下文调制降噪
-        weight = self.mscm(high + ll)
-        high_clean = high * weight
-
-        # 3. 频域重构并上采样回原分辨率
-        freq_fused = ll + high_clean
-        f_up = F.interpolate(freq_fused, size=x.shape[-2:], mode="bilinear", align_corners=False)
-
-        # 4. 残差融合
-        out = self.fuse(f_up)
-        return x + out
-
-
 class EdgeExtraction(nn.Module):
     def __init__(self, in_channels=128):
         super().__init__()
@@ -348,14 +261,10 @@ class Encoder(nn.Module):
             hidden_dim=256,
         )
 
-        '''self.noise_suppress = DINOguidedNoiseSuppress(
+        self.noise_suppress = DINOguidedNoiseSuppress(
             cnn_dim=fpn_channels,
             dino_dim=dense_out_dim
-        )'''
-
-        # 新增：针对浅层特征（128 与 64 尺度）的小波高频降噪模块
-        self.wca1 = WaveletContextEnhancer(fpn_channels)
-        self.wca2 = WaveletContextEnhancer(fpn_channels)
+        )
 
     def forward(self, x):
         fea = self.backbone(x)
@@ -366,12 +275,9 @@ class Encoder(nn.Module):
 
         ds_fea_adapted = self.defect_adapter(raw_ds_fea)
 
-        # fea = self.noise_suppress(fea, ds_fea_adapted)
+        fea = self.noise_suppress(fea, ds_fea_adapted)
 
-        final_fea = list(self.pff(fea, ds_fea_adapted))
-
-        final_fea[0] = self.wca1(final_fea[0])
-        final_fea[1] = self.wca2(final_fea[1])
+        final_fea = self.pff(fea, ds_fea_adapted)
 
         return final_fea
 
@@ -418,7 +324,7 @@ class DecoderConvBlock(nn.Module):
         return x + self.block(x)
 
 
-'''class Decoder(nn.Module):
+class Decoder(nn.Module):
     def __init__(
             self,
             fpn_channels=128,
@@ -525,116 +431,10 @@ class DecoderConvBlock(nn.Module):
 
         edge_mask = self.conv5(edge_mask)
 
-        return pred_p1, edge_mask'''
-
-class Decoder(nn.Module):
-    def __init__(self, fpn_channels=128, **kwargs):
-        super().__init__()
-
-        self.p4_to_p3 = FuseGated(fpn_channels)
-        self.p3_to_p2 = FuseGated(fpn_channels)
-        self.p2_to_p1 = FuseGated(fpn_channels)
-
-        self.tb4 = TransformerBlock(dim=fpn_channels, ffn_expansion_factor=2, bias=False, LayerNorm_type="BiasFree")
-        self.tb3 = TransformerBlock(dim=fpn_channels, ffn_expansion_factor=2, bias=False, LayerNorm_type="BiasFree")
-        self.convD2 = DecoderConvBlock(fpn_channels, fpn_channels, dilation=2)
-        self.convD1 = DecoderConvBlock(fpn_channels, fpn_channels, dilation=1)
-
-        self.conv4 = nn.Sequential(
-            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(fpn_channels),
-            nn.ReLU(inplace=True)
-        )
-        self.conv3 = nn.Sequential(
-            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(fpn_channels),
-            nn.ReLU(inplace=True)
-        )
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(fpn_channels),
-            nn.ReLU(inplace=True)
-        )
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(fpn_channels),
-            nn.ReLU(inplace=True)
-        )
-
-        self.edge = EdgeExtraction(in_channels=fpn_channels)
-
-        # 4 个尺度的辅助预测头与 1 个边缘头
-        self.p4_head = ConvOut(fpn_channels)
-        self.p3_head = ConvOut(fpn_channels)
-        self.p2_head = ConvOut(fpn_channels)
-        self.p1_head = ConvOut(fpn_channels)
-        self.conv5 = nn.Conv2d(fpn_channels, 1, kernel_size=1, bias=False)
-
-    def forward(self, xs):
-        fea1, fea2, fea3, fea4 = xs
-
-        # 保持 ESDI-30 边缘构建方式
-        fea4_up = F.interpolate(fea4, size=(128, 128), mode="bilinear", align_corners=False)
-        edge_input = fea1 + fea4_up
-        edge_mask = self.edge(edge_input)
-
-        # Stage 4 (16x16)
-        edge_mask_4 = F.interpolate(edge_mask, size=(16, 16), mode="bilinear", align_corners=False)
-        fea4E = torch.cat([edge_mask_4, fea4], dim=1)
-        t4 = self.conv4(fea4E)
-        fea4D = self.tb4(t4)
-        pred4 = self.p4_head(fea4D)
-
-        # Stage 3 (32x32)
-        edge_mask_3 = F.interpolate(edge_mask, size=(32, 32), mode="bilinear", align_corners=False)
-        fea3E = torch.cat([edge_mask_3, fea3], dim=1)
-        t3 = self.conv3(fea3E)
-        fea3D = self.tb3(self.p4_to_p3(fea4D, t3))
-        pred3 = self.p3_head(fea3D)
-
-        # Stage 2 (64x64)
-        edge_mask_2 = F.interpolate(edge_mask, size=(64, 64), mode="bilinear", align_corners=False)
-        fea2E = torch.cat([edge_mask_2, fea2], dim=1)
-        t2 = self.conv2(fea2E)
-        fea2D = self.convD2(self.p3_to_p2(fea3D, t2))
-        pred2 = self.p2_head(fea2D)
-
-        # Stage 1 (128x128)
-        edge_mask_1 = F.interpolate(edge_mask, size=(128, 128), mode="bilinear", align_corners=False)
-        fea1E = torch.cat([edge_mask_1, fea1], dim=1)
-        t1 = self.conv1(fea1E)
-        fea1D = self.convD1(self.p2_to_p1(fea2D, t1))
-        pred1 = self.p1_head(fea1D)
-
-        # 统一上采样到 256x256
-        pred1 = F.interpolate(pred1, size=(256, 256), mode="bilinear", align_corners=False)
-        pred2 = F.interpolate(pred2, size=(256, 256), mode="bilinear", align_corners=False)
-        pred3 = F.interpolate(pred3, size=(256, 256), mode="bilinear", align_corners=False)
-        pred4 = F.interpolate(pred4, size=(256, 256), mode="bilinear", align_corners=False)
-
-        edge_mask = self.conv5(edge_mask)
-
-        return pred1, pred2, pred3, pred4, edge_mask
+        return pred_p1, edge_mask
 
 
 class ChangeModel(nn.Module):
-    def __init__(self, backbone="resnet34", fpn_channels=128, **kwargs):
-        super().__init__()
-        self.encoder = Encoder(backbone=backbone, fpn_channels=fpn_channels, **kwargs)
-        self.decoder = Decoder(fpn_channels=fpn_channels, **kwargs)
-
-    @torch.inference_mode()
-    def _forward(self, x):
-        final_fea = self.encoder(x)
-        pred1, _, _, _, _ = self.decoder(final_fea)
-        return pred1
-
-    def forward(self, x):
-        final_fea = self.encoder(x)
-        return self.decoder(final_fea)
-
-
-'''class ChangeModel(nn.Module):
     def __init__(self, backbone="resnet34", fpn_channels=128, **kwargs):
         super().__init__()
         self.encoder = Encoder(backbone=backbone, fpn_channels=fpn_channels, **kwargs)
@@ -651,4 +451,4 @@ class ChangeModel(nn.Module):
         # for training
         final_fea = self.encoder(x)
         pred1, edge_mask = self.decoder(final_fea)
-        return pred1, edge_mask'''
+        return pred1, edge_mask

@@ -12,41 +12,48 @@ class Transforms(object):
             image = TF.hflip(image)
             label = TF.hflip(label)
 
-        # 3. 垂直翻转（对image和label同时应用）
         if random.random() < 0.5:
-            image = TF.vflip(image)
-            label = TF.vflip(label)
+            angle = random.uniform(-15, 15)
+            image = TF.rotate(
+                image,
+                angle,
+                interpolation=InterpolationMode.BILINEAR
+            )
+            label = TF.rotate(
+                label,
+                angle,
+                interpolation=InterpolationMode.NEAREST
+            )
 
-        # 4. 旋转（对image和label同时应用）
         if random.random() < 0.5:
-            angles = [90, 180, 270]
-            angle = random.choice(angles)
-            image = TF.rotate(image, angle, interpolation=InterpolationMode.BILINEAR)
-            label = TF.rotate(label, angle, interpolation=InterpolationMode.NEAREST)
+            angle = random.choice([90, 180, 270])
+            image = TF.rotate(
+                image,
+                angle,
+                interpolation=InterpolationMode.BILINEAR
+            )
+            label = TF.rotate(
+                label,
+                angle,
+                interpolation=InterpolationMode.NEAREST
+            )
 
         # 5. 颜色增强（只对图像，不对标签）
         if random.random() < 0.5:
             colorjitters = []
-            brightness_factor = random.uniform(0.75, 1.25)
+            brightness_factor = random.uniform(0.9, 1.1)
             colorjitters.append(Lambda(lambda img: TF.adjust_brightness(img, brightness_factor)))
-            contrast_factor = random.uniform(0.75, 1.25)
+            contrast_factor = random.uniform(0.9, 1.1)
             colorjitters.append(Lambda(lambda img: TF.adjust_contrast(img, contrast_factor)))
-            saturation_factor = random.uniform(0.75, 1.25)
+            saturation_factor = random.uniform(0.9, 1.1)
             colorjitters.append(Lambda(lambda img: TF.adjust_saturation(img, saturation_factor)))
             random.shuffle(colorjitters)
             colorjitter = Compose(colorjitters)
             image = colorjitter(image)
             # 注意：label不进行颜色增强
 
-        # 6. 随机裁剪和缩放（对image和label同时应用）
-
-        i, j, h, w = transforms.RandomResizedCrop(size=(256, 256)).get_params(
-            img=image, scale=[0.333, 1.0], ratio=[0.75, 1.333]
-        )
-        image = TF.resized_crop(image, i, j, h, w, size=(256, 256), interpolation=InterpolationMode.BILINEAR)
-        label = TF.resized_crop(label, i, j, h, w, size=(256, 256), interpolation=InterpolationMode.NEAREST)
-
         return {'image': image, 'label': label}
+
 
 class Lambda(object):
     def __init__(self, lambd):

@@ -5,66 +5,55 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
+from torchvision.transforms import InterpolationMode
 
-
-def make_dataset(dir):
+def make_dataset(root):
     img_paths = []
     names = []
-    assert os.path.isdir(dir), "%s is not a valid directory" % dir
 
-    for root, _, fnames in sorted(os.walk(dir)):
-        for fname in fnames:
-            path = os.path.join(root, fname)
+    assert os.path.isdir(root), "%s is not a valid directory" % root
+
+    for fname in sorted(os.listdir(root)):
+        path = os.path.join(root, fname)
+        if os.path.isfile(path):
             img_paths.append(path)
             names.append(fname)
 
     return img_paths, names
-
 
 class Load_Dataset(Dataset):
     def __init__(self, opt):
         super(Load_Dataset, self).__init__()
         self.opt = opt
 
-        self.resize = transforms.Resize((256, 256))
+        self.image_resize = transforms.Resize((256, 256), interpolation=InterpolationMode.BILINEAR)
+        self.label_resize = transforms.Resize((256, 256), interpolation=InterpolationMode.NEAREST)
 
-        # 单输入分割 - 图像是jpg，标签是png
         self.image_dir = os.path.join(opt.dataroot, opt.dataset, opt.phase, "images")
-        self.image_paths, self.fnames = sorted(make_dataset(self.image_dir))
+        self.image_paths, self.fnames = make_dataset(self.image_dir)
 
         self.label_dir = os.path.join(opt.dataroot, opt.dataset, opt.phase, "gt")
 
         # 创建对应的标签文件路径
         self.label_paths = []
         for fname in self.fnames:
-            # jpg -> png 转换
-            # 例如: image_001.jpg -> image_001.png
-            label_name = fname.replace('.jpg', '.png').replace('.JPG', '.png')
-            label_path = os.path.join(self.label_dir, label_name)
-
-            # 如果直接替换不行，尝试其他命名规则
-            if not os.path.exists(label_path):
-                # 方案1: 去掉.jpg后缀再加.png
-                label_name = fname.split('.')[0] + '.png'
-                label_path = os.path.join(self.label_dir, label_name)
+            base_name = os.path.splitext(fname)[0]
+            label_path = os.path.join(self.label_dir, base_name + ".png")
 
             if not os.path.exists(label_path):
-                # 方案2: 可能存在不同的前缀/后缀
-                # 例如: train_001.jpg -> gt_train_001.png
                 print(f"警告: 找不到对应的标签文件: {fname}")
 
             self.label_paths.append(label_path)
 
-        self.dataset_size = len(self.image_paths)
-
-        self.normalize = transforms.Compose(
-            [transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))]
+        self.normalize = transforms.Normalize(
+            (0.485, 0.456, 0.406),
+            (0.229, 0.224, 0.225)
         )
-        self.transform = transforms.Compose([Transforms()])
-        self.to_tensor = transforms.Compose([transforms.ToTensor()])
+        self.transform = Transforms()
+        self.to_tensor = transforms.ToTensor()
 
     def __len__(self):
-        return self.dataset_size
+        return len(self.image_paths)
 
     def __getitem__(self, index):
 
@@ -82,10 +71,9 @@ class Load_Dataset(Dataset):
             _data = self.transform({"image": img, "label": label})
             img = _data["image"]
             label = _data["label"]
-        else:
-            # 验证/测试时：直接resize到256×256
-            img = self.resize(img)
-            label = self.resize(label)
+
+        img = self.image_resize(img)
+        label = self.label_resize(label)
 
         img_tensor = self.to_tensor(img)
         img_tensor = self.normalize(img_tensor)
@@ -98,12 +86,12 @@ class Load_Dataset(Dataset):
 
         label_tensor = torch.from_numpy(label_np).float().unsqueeze(0)  # [1, H, W]
 
-        input_dict = {"image": img_tensor, "label": label_tensor, "fname": fname}
+        input_dict = {"image": img_tensor, "label": label_tensor, "fname": fname, "label_path": label_path}
 
         return input_dict
 
 
-class DataLoader(torch.utils.data.Dataset):
+class DataLoader:
 
     def __init__(self, opt):
         self.dataset = Load_Dataset(opt)
