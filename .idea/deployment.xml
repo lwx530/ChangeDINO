@@ -37,6 +37,20 @@
           </mappings>
         </serverdata>
       </paths>
+      <paths name="linweixuan@10.2.20.60:22164 key (6)">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="linweixuan@10.2.20.60:22164 key (7)">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
       <paths name="linweixuan@125.123.73.99:22162 key">
         <serverdata>
           <mappings>

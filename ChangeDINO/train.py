@@ -149,27 +149,7 @@ class Trainval(object):
                 val_pred = self.model.inference(
                     _data["image"].cuda()
                 )
-
-                # 获取概率图
-                val_pred_prob = torch.sigmoid(val_pred).squeeze(1)
-
-                for j in range(val_pred_prob.shape[0]):
-                    pred_np = val_pred_prob[j].cpu().numpy()
-
-                    gt = Image.open(_data["label_path"][j]).convert("L")
-                    gt_np = np.array(gt)
-
-                    pred_img = Image.fromarray((pred_np * 255).astype(np.uint8))
-                    pred_img = pred_img.resize(gt.size, resample=Image.BILINEAR)
-                    pred_np = np.array(pred_img)
-
-                    self.M.step(pred_np, gt_np, normalize=True)
-                    self.EM.step(pred_np, gt_np, normalize=True)
-                    self.FM.step(pred_np, gt_np, normalize=True)
-                    self.SM.step(pred_np, gt_np, normalize=True)
-                    self.WFM.step(pred_np, gt_np, normalize=True)
-
-                '''val_target = _data["label"].detach()
+                val_target = _data["label"].detach()
 
                 # 获取概率图
                 val_pred_prob = torch.sigmoid(val_pred).squeeze(1)
@@ -190,7 +170,7 @@ class Trainval(object):
                     self.EM.step(pred_uint8, gt_uint8, normalize=True)
                     self.FM.step(pred_uint8, gt_uint8, normalize=True)
                     self.SM.step(pred_uint8, gt_uint8, normalize=True)
-                    self.WFM.step(pred_uint8, gt_uint8, normalize=True)'''
+                    self.WFM.step(pred_uint8, gt_uint8, normalize=True)
 
             M_result = self.M.get_results()
             EM_result = self.EM.get_results()

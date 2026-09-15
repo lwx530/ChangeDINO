@@ -220,7 +220,7 @@ class Encoder(nn.Module):
             beta_mode="contextgatedconv",
             dino_weight="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
             device="cuda",
-            extract_ids=[5, 11, 17, 23],
+            extract_ids=[3, 8, 14, 20],
             # extract_ids=list(range(24)),
             **kwargs,
     ):

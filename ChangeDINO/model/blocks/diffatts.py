@@ -149,6 +149,6 @@ class TransformerBlock(nn.Module):
         self.channel_ffn = FeedForward(dim, ffn_expansion_factor * dim)
 
     def forward(self, x):
-        x = x + self.norm1(self.channel_attn(x))
-        x = x + self.norm2(self.channel_ffn(x))
+        x = x + self.channel_attn(self.norm1(x))
+        x = x + self.channel_ffn(self.norm2(x))
         return x

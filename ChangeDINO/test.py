@@ -9,7 +9,6 @@ from option import Options
 from data.cd_dataset import DataLoader
 from model.create_ChangeDINO import create_model
 
-
 if __name__ == "__main__":
     opt = Options().parse()
     opt.phase = "test"
@@ -42,32 +41,28 @@ if __name__ == "__main__":
             img_tensor = _data["image"].cuda()  # 原图张量 [B,3,H,W]
             val_pred = model.inference(_data["image"].cuda())
             # 替换为 TTA (水平翻转增强)：
-            '''img_tensor = _data["image"].cuda()
+            # img_tensor = _data["image"].cuda()
 
             # 1. 正常推理
-            pred_normal = model.inference(img_tensor)
+            # pred_normal = model.inference(img_tensor)
 
             # 2. 图像水平翻转后推理，再把结果翻转回来
-            img_flipped = torch.flip(img_tensor, dims=[3])
-            pred_flipped = model.inference(img_flipped)
-            pred_flipped = torch.flip(pred_flipped, dims=[3])
+            # img_flipped = torch.flip(img_tensor, dims=[3])
+            # pred_flipped = model.inference(img_flipped)
+            # pred_flipped = torch.flip(pred_flipped, dims=[3])
 
             # 3. 概率融合（平均）
-            val_pred = (pred_normal + pred_flipped) / 2.0'''
+            # val_pred = (pred_normal + pred_flipped) / 2.0
             # update metric
 
-            # ===== 重新安全计算概率 =====
-            scale = 1.0
+            val_target = _data["label"].detach()
 
-            logits = val_pred.detach() * scale
+            '''# 1. 获取概率图
+            if val_pred.shape[1] == 2:
+                val_pred_prob = torch.softmax(val_pred.detach(), dim=1)[:, 1]
 
-            if logits.shape[1] == 2:
-                probs = torch.softmax(logits, dim=1)
-                val_pred_prob = probs[:, 1, :, :]  # 明确取第2类
             else:
-                val_pred_prob = torch.sigmoid(logits[:, 0, :, :])
-
-            '''val_target = _data["label"].detach()
+                val_pred_prob = torch.sigmoid(val_pred.detach().squeeze(1))'''
 
             # ===== 重新安全计算概率 =====
             scale = 1.0
@@ -98,23 +93,7 @@ if __name__ == "__main__":
                 EM.step(pred_uint8, gt_uint8, normalize=True)
                 FM.step(pred_uint8, gt_uint8, normalize=True)
                 SM.step(pred_uint8, gt_uint8, normalize=True)
-                WFM.step(pred_uint8, gt_uint8, normalize=True)'''
-
-            for j in range(val_pred_prob.shape[0]):
-                pred_np = val_pred_prob[j].cpu().numpy()
-
-                gt = Image.open(_data["label_path"][j]).convert("L")
-                gt_np = np.array(gt)
-
-                pred_img = Image.fromarray((pred_np * 255).astype(np.uint8))
-                pred_img = pred_img.resize(gt.size, resample=Image.BILINEAR)
-                pred_np = np.array(pred_img)
-
-                M.step(pred_np, gt_np, normalize=True)
-                EM.step(pred_np, gt_np, normalize=True)
-                FM.step(pred_np, gt_np, normalize=True)
-                SM.step(pred_np, gt_np, normalize=True)
-                WFM.step(pred_np, gt_np, normalize=True)
+                WFM.step(pred_uint8, gt_uint8, normalize=True)
 
             if opt.save_test:
                 # 用概率图生成二值图

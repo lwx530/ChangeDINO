@@ -28,7 +28,7 @@ class Model(nn.Module):
         os.makedirs(self.save_dir, exist_ok=True)
 
         self.model = get_model(
-            backbone_name=opt.backbone,
+            backbone=opt.backbone,
             fpn_name=opt.fpn,
             fpn_channels=opt.fpn_channels,
             deform_groups=opt.deform_groups,
