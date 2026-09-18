@@ -52,22 +52,22 @@ def get_backbone(backbone_name):
         backbone = timm.create_model("resnet18d", pretrained=True, features_only=True)
         backbone.channels = [64, 64, 128, 256, 512]
     elif backbone_name == "resnet34":
-        backbone = timm.create_model("resnet34", pretrained=False, features_only=True)
+        backbone = timm.create_model("resnet34", pretrained=True, features_only=True)
         backbone.channels = [64, 64, 128, 256, 512]
-        state_dict = torch.load(
-            "/home/linweixuan/ChangeDINO/model/backbone/resnet34-b627a593.pth",
-            map_location="cpu",
-            weights_only=True
-        )
-        if "state_dict" in state_dict:
-            state_dict = state_dict["state_dict"]
-        elif "model" in state_dict:
-            state_dict = state_dict["model"]
-        state_dict.pop("fc.weight", None)
-        state_dict.pop("fc.bias", None)
-        backbone.load_state_dict(state_dict, strict=True)
-    else:
-        raise NotImplementedError("BACKBONE [%s] is not implemented!\n" % backbone_name)
+    #     state_dict = torch.load(
+    #         "/home/linweixuan/ChangeDINO/model/backbone/resnet34-b627a593.pth",
+    #         map_location="cpu",
+    #         weights_only=True
+    #     )
+    #     if "state_dict" in state_dict:
+    #         state_dict = state_dict["state_dict"]
+    #     elif "model" in state_dict:
+    #         state_dict = state_dict["model"]
+    #     state_dict.pop("fc.weight", None)
+    #     state_dict.pop("fc.bias", None)
+    #     backbone.load_state_dict(state_dict, strict=True)
+    # else:
+    #     raise NotImplementedError("BACKBONE [%s] is not implemented!\n" % backbone_name)
     return backbone
 
 
@@ -215,12 +215,9 @@ class Encoder(nn.Module):
             self,
             backbone="resnet34",
             fpn_channels=128,
-            deform_groups=4,
-            gamma_mode="SE",
-            beta_mode="contextgatedconv",
             dino_weight="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
             device="cuda",
-            extract_ids=[3, 8, 14, 20],
+            extract_ids=[5, 11, 17, 23],
             # extract_ids=list(range(24)),
             **kwargs,
     ):
@@ -236,17 +233,8 @@ class Encoder(nn.Module):
             ) for i in range(4)
         ])
 
-        '''self.fpn = FPN(
-            in_channels=self.backbone.channels[-4:],
-            out_channels=fpn_channels,
-            deform_groups=deform_groups,
-            gamma_mode=gamma_mode,
-            beta_mode=beta_mode,
-        )'''
         dense_out_dim = fpn_channels * 2
         self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids)
-
-        # self.groupweight = GroupWeightFusion(num_groups=4, layers_per_group=6)
 
         self.defect_adapter = LinearAdapter(
             in_dim=1024,
@@ -267,13 +255,13 @@ class Encoder(nn.Module):
         )
 
     def forward(self, x):
-        fea = self.backbone(x)
+        fea = self.backbone(x)   # 通道数为64，64，128，256，512
 
-        fea = [self.cnn_proj[i](fea[i]) for i in range(4)]
+        fea = [self.cnn_proj[i](fea[i]) for i in range(4)]   # 通道统一到128
 
         raw_ds_fea = self.dino(x)  # 获取24层
 
-        ds_fea_adapted = self.defect_adapter(raw_ds_fea)
+        ds_fea_adapted = self.defect_adapter(raw_ds_fea)  # 尺寸和CNN特征对齐，[128,64,32,16]，通道数降到256
 
         fea = self.noise_suppress(fea, ds_fea_adapted)
 
@@ -387,10 +375,10 @@ class Decoder(nn.Module):
 
         self.edge = EdgeExtraction(in_channels=fpn_channels)
 
-        self.p4_head = ConvOut(128)
-        self.p3_head = ConvOut(128)
-        self.p2_head = ConvOut(128)
-        self.p1_head = ConvOut(128)
+        self.p4_head = ConvOut(fpn_channels)
+        self.p3_head = ConvOut(fpn_channels)
+        self.p2_head = ConvOut(fpn_channels)
+        self.p1_head = ConvOut(fpn_channels)
 
         self.conv5 = nn.Conv2d(fpn_channels, 1, kernel_size=1, bias=False)
 

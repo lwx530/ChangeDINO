@@ -29,12 +29,7 @@ class Model(nn.Module):
 
         self.model = get_model(
             backbone=opt.backbone,
-            fpn_name=opt.fpn,
             fpn_channels=opt.fpn_channels,
-            deform_groups=opt.deform_groups,
-            gamma_mode=opt.gamma_mode,
-            beta_mode=opt.beta_mode,
-            n_layers=opt.n_layers,
             extract_ids=opt.extract_ids,
         )
         self.hybrid_loss = HybridLoss()
@@ -106,32 +101,6 @@ class Model(nn.Module):
 
     def save(self, model_name, backbone):
         self.save_ckpt(self.model, self.optimizer, model_name, backbone)
-
-    def save_latest(self, epoch, previous_best):
-        save_path = os.path.join(self.save_dir, 'latest.pth')
-        torch.save({
-            'epoch': epoch,
-            'previous_best': previous_best,
-            'network': self.model.cpu().state_dict(),
-            'optimizer': self.optimizer.state_dict(),
-            'scheduler': self.schedular.state_dict(),
-        }, save_path)
-        if torch.cuda.is_available():
-            self.model.cuda()
-
-    def resume_latest(self):
-        save_path = os.path.join(self.save_dir, 'latest.pth')
-        if not os.path.isfile(save_path):
-            print('No latest checkpoint found, starting from scratch')
-            return 1, 0.0
-        checkpoint = torch.load(save_path, map_location=self.device, weights_only=False)
-        self.model.load_state_dict(checkpoint['network'])
-        self.optimizer.load_state_dict(checkpoint['optimizer'])
-        self.schedular.load_state_dict(checkpoint['scheduler'])
-        start_epoch = checkpoint['epoch'] + 1
-        previous_best = checkpoint.get('previous_best', 0.0)
-        print('Resumed from epoch %d, previous best = %.6f' % (checkpoint['epoch'], previous_best))
-        return start_epoch, previous_best
 
     def name(self):
         return self.opt.name

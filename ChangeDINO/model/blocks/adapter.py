@@ -83,7 +83,7 @@ class DINOV3Wrapper(nn.Module):
     def __init__(
         self,
         weights_path="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
-        extract_ids=[3, 8, 14, 20],
+        extract_ids=[5, 11, 17, 23],
         device="cuda",
     ):
         super().__init__()
@@ -125,12 +125,9 @@ class DINOV3Wrapper(nn.Module):
 
         with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
             feats = self.model.get_intermediate_layers(
-                x, n=range(self.n_layers), reshape=True, norm=True
+                x, n=sorted(self.extract_ids), reshape=True, norm=True
             )
-            feats_ = []
-            for i in range(len(self.extract_ids)):
-                feats_.append(feats[self.extract_ids[i]].float())  # 关键：转回 fp32
-
+            feats_ = [f.float() for f in feats]  # 关键：转回 fp32
         return feats_
 
 
@@ -140,7 +137,7 @@ class LinearAdapter(nn.Module):
     def __init__(
             self,
             in_dim=1024,
-            out_dim=256,
+            out_dim=128,
             sizes=(128, 64, 32, 16),
     ):
         super().__init__()

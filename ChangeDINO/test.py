@@ -1,156 +1,88 @@
-import torch
+
 import os
 import cv2
-from tqdm import tqdm
-from PIL import Image
 import numpy as np
-from util.WPFormer_metrics import MAE, Emeasure, Fmeasure, Smeasure, WeightedFmeasure
+import torch
+from PIL import Image
+from tqdm import tqdm
+
 from option import Options
 from data.cd_dataset import DataLoader
 from model.create_ChangeDINO import create_model
+from util.WPFormer_metrics import MAE, Emeasure, Fmeasure, Smeasure, WeightedFmeasure
+
+
+def evaluate(model, data_loader, save_dir=None):
+    FM = Fmeasure()
+    WFM = WeightedFmeasure()
+    SM = Smeasure()
+    EM = Emeasure()
+    M = MAE()
+
+    if save_dir is not None:
+        os.makedirs(save_dir, exist_ok=True)
+
+    model.eval()
+    with torch.no_grad():
+        for _data in tqdm(data_loader, ncols=80):
+            logits = model.inference(_data["image"].cuda())
+
+            if logits.shape[1] == 2:
+                prob = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
+            else:
+                prob = torch.sigmoid(logits[:, 0]).cpu().numpy()
+
+            for j in range(prob.shape[0]):
+                p = prob[j]
+                p = (p - p.min()) / (p.max() - p.min() + 1e-8)
+
+                img = Image.fromarray((p * 255).astype(np.float32)).convert("L")
+
+                gt = cv2.imread(_data["label_path"][j], cv2.IMREAD_GRAYSCALE)
+                if gt is None:
+                    raise FileNotFoundError(_data["label_path"][j])
+                H, W = gt.shape
+                img = img.resize((W, H), resample=Image.NEAREST)
+                # img = img.resize((W, H), resample=Image.BILINEAR)
+
+                if save_dir is not None:
+                    name = os.path.splitext(_data["fname"][j])[0] + ".png"
+                    img.save(os.path.join(save_dir, name))
+
+                pred = np.array(img)
+                FM.step(pred=pred, gt=gt)
+                WFM.step(pred=pred, gt=gt)
+                SM.step(pred=pred, gt=gt)
+                EM.step(pred=pred, gt=gt)
+                M.step(pred=pred, gt=gt)
+
+    results = {
+        "MAE":       '%.4f' % M.get_results()["mae"],
+        "meanEm":    '%.4f' % EM.get_results()["em"]["curve"].mean(),
+        "meanFm":    '%.4f' % FM.get_results()["fm"]["curve"].mean(),
+        "Smeasure":  '%.4f' % SM.get_results()["sm"],
+        "wFmeasure": '%.4f' % WFM.get_results()["wfm"],
+    }
+    print(results)
+
+    return results
+
 
 if __name__ == "__main__":
     opt = Options().parse()
     opt.phase = "test"
+
     test_loader = DataLoader(opt)
     test_data = test_loader.load_data()
-    test_size = len(test_loader)
-    print("#testing images = %d" % test_size)
+    print("#testing images = %d" % len(test_loader))
 
     opt.load_pretrain = True
     model = create_model(opt)
 
-    tbar = tqdm(test_data, ncols=80)
-    # total_iters = test_size
-    # running_metric = ConfuseMatrixMeter(n_class=2)
-    # running_metric.clear()
+    save_dir = os.path.join(opt.checkpoint_dir, opt.name, "pred") if opt.save_test else None
 
-    # 初始化WPFormer指标
-    M = MAE()
-    EM = Emeasure()
-    FM = Fmeasure()
-    SM = Smeasure()
-    WFM = WeightedFmeasure()
-
-    test_save_path = os.path.join(opt.checkpoint_dir, opt.name, "pred")
-    if opt.save_test and not os.path.exists(test_save_path):
-        os.makedirs(test_save_path, exist_ok=True)
-    model.eval()
-    with torch.no_grad():
-        for i, _data in enumerate(tbar):
-            img_tensor = _data["image"].cuda()  # 原图张量 [B,3,H,W]
-            val_pred = model.inference(_data["image"].cuda())
-            # 替换为 TTA (水平翻转增强)：
-            # img_tensor = _data["image"].cuda()
-
-            # 1. 正常推理
-            # pred_normal = model.inference(img_tensor)
-
-            # 2. 图像水平翻转后推理，再把结果翻转回来
-            # img_flipped = torch.flip(img_tensor, dims=[3])
-            # pred_flipped = model.inference(img_flipped)
-            # pred_flipped = torch.flip(pred_flipped, dims=[3])
-
-            # 3. 概率融合（平均）
-            # val_pred = (pred_normal + pred_flipped) / 2.0
-            # update metric
-
-            val_target = _data["label"].detach()
-
-            '''# 1. 获取概率图
-            if val_pred.shape[1] == 2:
-                val_pred_prob = torch.softmax(val_pred.detach(), dim=1)[:, 1]
-
-            else:
-                val_pred_prob = torch.sigmoid(val_pred.detach().squeeze(1))'''
-
-            # ===== 重新安全计算概率 =====
-            scale = 1.0
-
-            logits = val_pred.detach() * scale
-
-            if logits.shape[1] == 2:
-                probs = torch.softmax(logits, dim=1)
-                val_pred_prob = probs[:, 1, :, :]  # 明确取第2类
-            else:
-                val_pred_prob = torch.sigmoid(logits[:, 0, :, :])
-
-            # print("val_pred_prob shape:", val_pred_prob.shape)
-
-            # 2. 确保标签是二维
-            if val_target.dim() == 4:
-                val_target = val_target.squeeze(1)
-
-            # 3. 更新WPFormer指标
-            for j in range(val_pred_prob.shape[0]):
-                pred_np = val_pred_prob[j].cpu().numpy()
-                target_np = val_target[j].cpu().numpy()
-
-                pred_uint8 = (pred_np * 255).astype(np.uint8)
-                gt_uint8 = (target_np * 255).astype(np.uint8)
-
-                M.step(pred_uint8, gt_uint8, normalize=True)
-                EM.step(pred_uint8, gt_uint8, normalize=True)
-                FM.step(pred_uint8, gt_uint8, normalize=True)
-                SM.step(pred_uint8, gt_uint8, normalize=True)
-                WFM.step(pred_uint8, gt_uint8, normalize=True)
-
-            if opt.save_test:
-                # 用概率图生成二值图
-                val_pred_binary = (val_pred_prob > 0.3).long()
-                for j in range(val_pred_binary.shape[0]):
-                    pred = Image.fromarray((val_pred_binary[j].cpu().detach().numpy() * 255).astype("uint8"))
-                    pred.save(
-                        os.path.join(test_save_path, _data["fname"][j])
-                    )
-
-        # 获取WPFormer指标结果
-        M_result = M.get_results()
-        EM_result = EM.get_results()
-        FM_result = FM.get_results()
-        SM_result = SM.get_results()
-        WFM_result = WFM.get_results()
-
-        # ====== 计算 Precision / Recall ======
-        import numpy as np
-
-        all_precisions = np.array(FM.precisions)  # [N, 256]
-        all_recalls = np.array(FM.recalls)  # [N, 256]
-        all_fms = np.array(FM.changeable_fms)  # [N, 256]
-
-        mean_precision_curve = all_precisions.mean(axis=0)
-        mean_recall_curve = all_recalls.mean(axis=0)
-        mean_f_curve = all_fms.mean(axis=0)
-
-        mean_precision = mean_precision_curve.mean()
-        mean_recall = mean_recall_curve.mean()
-
-        best_idx = np.argmax(mean_f_curve)
-
-        best_precision = mean_precision_curve[best_idx]
-        best_recall = mean_recall_curve[best_idx]
-
-        print("\n" + "=" * 60)
-        print("Precision / Recall Analysis:")
-        print("=" * 60)
-        print(f"Mean Precision: {mean_precision:.6f}")
-        print(f"Mean Recall: {mean_recall:.6f}")
-        print(f"Best Threshold Precision: {best_precision:.6f}")
-        print(f"Best Threshold Recall: {best_recall:.6f}")
-        print("=" * 60)
-
-        val_scores = {
-            'MAE': M_result['mae'],
-            'Emeasure': EM_result['em']['adp'],
-            'Fmeasure': FM_result['fm']['adp'],
-            'Smeasure': SM_result['sm'],
-            'wFmeasure': WFM_result['wfm']
-        }
-
-        # 输出结果
-        print("\n" + "=" * 60)
-        print("WPFormer Test Metrics:")
-        print("=" * 60)
-        for k, v in val_scores.items():
-            print(f"{k}: {v:.6f}")
-        print("=" * 60)
+    print("=" * 60)
+    print("%s Test Metrics:" % opt.name)
+    print("=" * 60)
+    evaluate(model, test_data, save_dir=save_dir)
+    print("=" * 60)
