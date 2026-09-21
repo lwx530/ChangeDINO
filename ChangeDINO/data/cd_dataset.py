@@ -25,6 +25,7 @@ class Load_Dataset(Dataset):
     def __init__(self, opt):
         super(Load_Dataset, self).__init__()
         self.opt = opt
+        self.is_train = (opt.phase == "train")
 
         self.image_resize = transforms.Resize((256, 256), interpolation=InterpolationMode.BILINEAR)
         self.label_resize = transforms.Resize((256, 256), interpolation=InterpolationMode.NEAREST)
@@ -67,7 +68,7 @@ class Load_Dataset(Dataset):
         label = Image.open(label_path).convert('L')  # 灰度图
 
         # 数据增强（需要调整Transform类）
-        if self.opt.phase == "train":
+        if self.is_train:
             _data = self.transform({"image": img, "label": label})
             img = _data["image"]
             label = _data["label"]

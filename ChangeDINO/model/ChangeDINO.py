@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from .blocks.adapter import DINOV3Wrapper, LinearAdapter, ConvOut
 from .blocks.diffatts import TransformerBlock
-from .blocks.sfhm import SFHM
 from .backbone.mobilenetv2 import mobilenet_v2
+from .blocks.freq_fusion import FreqFusionBlock
 
 
 class EdgeExtraction(nn.Module):
@@ -321,9 +321,13 @@ class Decoder(nn.Module):
         super().__init__()
 
         # 保持门控融合模块
-        self.p4_to_p3 = FuseGated(fpn_channels)
-        self.p3_to_p2 = FuseGated(fpn_channels)
-        self.p2_to_p1 = FuseGated(fpn_channels)
+        # self.p4_to_p3 = FuseGated(fpn_channels)
+        # self.p3_to_p2 = FuseGated(fpn_channels)
+        # self.p2_to_p1 = FuseGated(fpn_channels)
+
+        self.p4_to_p3 = FreqFusionBlock(channels=fpn_channels)
+        self.p3_to_p2 = FreqFusionBlock(channels=fpn_channels)
+        self.p2_to_p1 = FreqFusionBlock(channels=fpn_channels)
 
         self.tb4 = TransformerBlock(
             dim=fpn_channels,

@@ -1,170 +1,215 @@
+import os
+import glob
 
+import cv2
+import numpy as np
+import torch
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
 from PIL import Image
 import torchvision.transforms as transforms
 
-# 导入你的模型
 from model.ChangeDINO import ChangeModel
 
-import torch
-import torch.nn.functional as F
-import os
-import matplotlib.pyplot as plt
-import numpy as np
+
+# ==================== 配置 ====================
+WEIGHT_PATH = "/home/linweixuan/ChangeDINO/checkpoints/ESDI-7/ESDI-7_resnet34_best.pth"
+DATA_ROOT   = "/home/linweixuan/ChangeDINO/datasets/ESDIs-SOD/test"
+IMG_SIZE    = 256
+SAVE_ROOT   = "vis_results"
+
+# 想多看几张就加名字（不带扩展名）
+IMG_NAMES = ["1_8","1_19","7_4","10_9"]
+# =============================================
 
 
-def save_feature_map(feature_tensor, save_name, save_dir="vis_results_10_11_7", target_size=(256, 256)):
+def save_feature_heatmap(feature_tensor, image_pil, save_name, save_dir="vis", target_size=(256, 256)):
     os.makedirs(save_dir, exist_ok=True)
 
-    # 1. 递归处理多尺度特征
     if isinstance(feature_tensor, (list, tuple)):
         for idx, feat in enumerate(feature_tensor):
-            scale_name = f"{save_name}_scale{idx}"
-            save_feature_map(feat, scale_name, save_dir, target_size)
+            save_feature_heatmap(feat, image_pil, f"{save_name}_scale{idx}", save_dir, target_size)
         return
 
-    # 2. 获取张量并放入 CPU
     feat = feature_tensor.detach().cpu()
     if feat.dim() == 3:
         feat = feat.unsqueeze(0)
-    elif feat.dim() != 4:
-        print(f"  [跳过] {save_name} 不支持的张量维度: {feat.shape}")
+    if feat.dim() != 4:
         return
 
-    # 3. 先进行上采样，对齐到 256x256
-    feat_up = F.interpolate(feat, size=target_size, mode='bilinear', align_corners=False)
-    feat_up = feat_up.squeeze(0)  # 变为 [C, H, W]
+    feat = F.interpolate(feat, size=target_size, mode="bilinear", align_corners=False)
 
-    C, H, W = feat_up.shape
-
-    # 4. 智能筛选策略：计算每个通道的方差，找出波动最大（信息最丰富）的 Top-16
-    feat_flat = feat_up.view(C, -1)
-    variances = torch.var(feat_flat, dim=1)  # 计算方差
-
-    # 防止通道数不足 16 的情况（比如最后的 p1 输出通常只有单通道或少通道）
-    n = min(C, 16)
-    _, topk_indices = torch.topk(variances, n)
-
-    # 取出这 16 个“偏科”通道
-    selected_features = feat_up[topk_indices]
-
-    # 5. 绘制网格图 (改为 4x4 矩阵排列)
-    rows = int(np.ceil(n / 4))  # 计算行数，每行最多 4 张
-    cols = min(n, 4)  # 计算列数
-    fig, axes = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows))
-
-    # 兼容处理：把二维的 axes 数组展平为一维，方便后续循环
-    if n > 1:
-        axes = axes.flatten()
+    if feat.shape[1] == 1:
+        heat = feat[0, 0]
     else:
-        axes = [axes]
+        heat = torch.norm(feat[0], p=2, dim=0)
 
-    for i in range(n):
-        fm = selected_features[i].numpy()
+    heat = heat.numpy()
+    heat = (heat - heat.min()) / (heat.max() - heat.min() + 1e-8)
 
-        # 对单个通道进行 Min-Max 归一化
-        f_min, f_max = fm.min(), fm.max()
-        if f_max - f_min > 1e-8:
-            fm_norm = (fm - f_min) / (f_max - f_min)
-        else:
-            fm_norm = np.zeros_like(fm)
+    plt.imsave(os.path.join(save_dir, f"{save_name}_heat.png"), heat, cmap="jet")
 
-        # 使用 'jet' 恢复经典的论文蓝红热力图风格
-        axes[i].imshow(fm_norm, cmap='jet')
-        axes[i].axis('off')
-        axes[i].set_title(f"Ch: {topk_indices[i].item()}", fontsize=10)
 
-    # 把没画满的多余子图隐藏掉
-    for j in range(n, len(axes)):
-        axes[j].axis('off')
-    # 6. 紧凑排版并保存
+def thin_boundary(mask_t):
+    """mask_t: [1,1,H,W] {0,1} -> 形态学梯度，严格 1 像素边界"""
+    return F.max_pool2d(mask_t, 3, 1, 1) - (-F.max_pool2d(-mask_t, 3, 1, 1))
+
+
+def diagnose_one(model, name, feats, device):
+    img_root, gt_root = os.path.join(DATA_ROOT, "images"), os.path.join(DATA_ROOT, "gt")
+
+    cand = glob.glob(os.path.join(img_root, name + ".*"))
+    if not cand:
+        print(f"[跳过] 找不到图片: {name}")
+        return
+    img_path = cand[0]
+    gt_path = os.path.join(gt_root, name + ".png")
+
+    if not os.path.exists(gt_path):
+        print(f"[跳过] 找不到标签: {gt_path}")
+        return
+
+    save_dir = os.path.join(SAVE_ROOT, name)
+    os.makedirs(save_dir, exist_ok=True)
+
+    # ---- 输入 ----
+    img = Image.open(img_path).convert("RGB")
+    tf = transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    ])
+    x = tf(img).unsqueeze(0).to(device)
+
+    # ---- GT（缩到网络网格，和训练时的目标一致）----
+    gt_pil = Image.open(gt_path).convert("L").resize((IMG_SIZE, IMG_SIZE), Image.NEAREST)
+    gt_np = (np.array(gt_pil) > 127).astype(np.float32)
+    gt_t = torch.from_numpy(gt_np)[None, None].to(device)
+    gb = thin_boundary(gt_t)
+
+    # ---- 前向 ----
+    feats.clear()
+    model.eval()
+    with torch.no_grad():
+        pred_main = model._forward(x)
+
+    # ==================== 统计 ====================
+    print("\n" + "=" * 64)
+    print(f"图片: {name}")
+    print("=" * 64)
+
+    if "11_boundary" in feats:
+        bp = torch.sigmoid(feats["11_boundary"])
+        print("[pred boundary] sigmoid mean = %.4f" % bp.mean().item())
+        print("[pred boundary] frac > 0.5   = %.4f" % (bp > 0.5).float().mean().item())
+        print("[pred boundary] min / max    = %.4f / %.4f" % (bp.min().item(), bp.max().item()))
+    else:
+        print("[警告] 没抓到 11_boundary，检查 hook 是否挂上 decoder.conv5")
+
+    print("[GT]   foreground frac       = %.4f" % gt_t.mean().item())
+    print("[GT]   thin-boundary frac    = %.4f" % gb.mean().item())
+
+    pm = torch.sigmoid(pred_main)
+    print("[main] pred frac > 0.5       = %.4f" % (pm > 0.5).float().mean().item())
+    print("[main] pred mean             = %.4f" % pm.mean().item())
+
+    if "9_edge" in feats and "9_edge_in" in feats:
+        ein = feats["9_edge_in"][0]
+        eout = feats["9_edge"][0]
+        a = eout.norm(dim=0).flatten()
+        b = ein.norm(dim=0).flatten()
+        a = a - a.mean()
+        b = b - b.mean()
+        corr = (a @ b / (a.norm() * b.norm() + 1e-8)).item()
+        print("[edge] corr(edge_out, edge_in) = %.4f" % corr)
+    print("=" * 64)
+
+    # ==================== 五联图 ====================
+    tgt = (IMG_SIZE, IMG_SIZE)
+
+    pred_mask = F.interpolate(pm, size=tgt, mode="bilinear", align_corners=False)[0, 0]
+    pred_b = F.interpolate(torch.sigmoid(feats["11_boundary"]), size=tgt,
+                           mode="bilinear", align_corners=False)[0, 0]
+
+    e_out = feats["9_edge"][0].norm(dim=0, keepdim=True).unsqueeze(0)
+    e_out = F.interpolate(e_out, size=tgt, mode="bilinear", align_corners=False)[0, 0]
+    e_out = (e_out - e_out.min()) / (e_out.max() - e_out.min() + 1e-8)
+
+    e_in = feats["9_edge_in"][0].norm(dim=0, keepdim=True).unsqueeze(0)
+    e_in = F.interpolate(e_in, size=tgt, mode="bilinear", align_corners=False)[0, 0]
+    e_in = (e_in - e_in.min()) / (e_in.max() - e_in.min() + 1e-8)
+
+    fig, ax = plt.subplots(1, 6, figsize=(26, 4.6))
+    ax[0].imshow(img.resize(tgt));                                     ax[0].set_title("image")
+    ax[1].imshow(gt_np, cmap="gray", vmin=0, vmax=1);                  ax[1].set_title("GT mask")
+    ax[2].imshow(gb[0, 0].cpu().numpy(), cmap="gray", vmin=0, vmax=1); ax[2].set_title("GT boundary (1px)")
+    ax[3].imshow(pred_b.cpu().numpy(), cmap="jet", vmin=0, vmax=1);    ax[3].set_title("pred boundary (sigmoid)")
+    ax[4].imshow(pred_mask.cpu().numpy(), cmap="jet", vmin=0, vmax=1); ax[4].set_title("pred mask")
+    ax[5].imshow(e_out.cpu().numpy(), cmap="jet");                     ax[5].set_title("edge_out energy")
+    for a in ax:
+        a.axis("off")
     plt.tight_layout()
-    save_path = os.path.join(save_dir, f"{save_name}_top{n}.png")
-    plt.savefig(save_path, bbox_inches='tight')
+    plt.savefig(os.path.join(save_dir, "boundary_diagnosis.png"), dpi=130, bbox_inches="tight")
     plt.close()
+
+    # ==================== 常规热力图 ====================
+    for fname in sorted(feats.keys()):
+        if fname.endswith("_in") or fname == "11_boundary":
+            continue
+        save_feature_heatmap(feats[fname], img, fname, save_dir=save_dir, target_size=tgt)
+
+    print(f"-> 已保存到 {save_dir}/")
+
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    print("1. 正在加载模型架构...")
+    print("1. 构建模型...")
     model = ChangeModel(backbone="resnet34").to(device)
 
-    print("2. 正在加载训练好的权重...")
-    weight_path = "/home/linweixuan/ChangeDINO/checkpoints/ESDI-7/ESDI-7_resnet34_best.pth"
-    # weight_path = "/root/autodl-tmp/ChangeDINO/checkpoints/ESDI-1/ESDI-1_resnet34_best.pth"
+    print("2. 加载权重...")
+    if not os.path.exists(WEIGHT_PATH):
+        print(f"❌ 找不到权重: {WEIGHT_PATH}")
+        return
+    ckpt = torch.load(WEIGHT_PATH, map_location=device)
+    state_dict = ckpt.get("network", ckpt.get("model_state_dict", ckpt))
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    print(f"   缺失的 key: {len(missing)}  多余的 key: {len(unexpected)}")
+    if missing:
+        print("   missing[:5] =", missing[:5])
+    if unexpected:
+        print("   unexpected[:5] =", unexpected[:5])
 
-    if os.path.exists(weight_path):
-        checkpoint = torch.load(weight_path, map_location=device)
-        state_dict = checkpoint.get('network',checkpoint.get('model_state_dict',checkpoint))
-        model.load_state_dict(state_dict, strict=False)
-        print("加载权重成功！")
-    else:
-        print(f"警告：未找到权重文件{weight_path}")
-
-    model.eval()
-
-    print("3. 正在注册模块特征提取 Hook...")
-    all_features = {}
-    hook_handles = []
+    print("3. 注册 hook...")
+    feats = {}
+    handles = []
 
     def get_hook(name):
-        def hook(module, input, output):
-            all_features[name] = output
+        def hook(module, inp, out):
+            feats[name] = out
+            if isinstance(inp, (tuple, list)) and len(inp) > 0:
+                feats[name + "_in"] = inp[0]
         return hook
 
-    # 将钩子挂载到模型内部的 dino 模块上
-    hook_handles.append(model.encoder.backbone.register_forward_hook(get_hook('1_resnet34')))
+    handles.append(model.encoder.backbone.register_forward_hook(get_hook("1_resnet34")))
+    handles.append(model.encoder.dino.register_forward_hook(get_hook("2_dino")))
+    handles.append(model.encoder.defect_adapter.register_forward_hook(get_hook("4_defect_adapter")))
+    handles.append(model.decoder.edge.register_forward_hook(get_hook("9_edge")))
+    handles.append(model.decoder.conv5.register_forward_hook(get_hook("11_boundary")))   # ★ 新增
+    handles.append(model.decoder.conv4.register_forward_hook(get_hook("10_edge4")))
+    handles.append(model.decoder.conv3.register_forward_hook(get_hook("10_edge3")))
+    handles.append(model.decoder.conv2.register_forward_hook(get_hook("10_edge2")))
+    handles.append(model.decoder.conv1.register_forward_hook(get_hook("10_edge1")))
 
-    hook_handles.append(model.encoder.dino.register_forward_hook(get_hook('2_dino')))
-    hook_handles.append(model.encoder.groupweight.register_forward_hook(get_hook('3_groupweight')))
-    hook_handles.append(model.encoder.defect_adapter.register_forward_hook(get_hook('4_defect_adapter')))
+    print(f"4. 开始诊断 {len(IMG_NAMES)} 张图...")
+    for name in IMG_NAMES:
+        diagnose_one(model, name, feats, device)
 
-    hook_handles.append(model.encoder.sfhm_modules[0].register_forward_hook(get_hook('5_SFHM0')))
+    for h in handles:
+        h.remove()
 
-    hook_handles.append(model.encoder.fam_modules[0].register_forward_hook(get_hook('6_fam0')))
-    hook_handles.append(model.encoder.fam_modules[1].register_forward_hook(get_hook('6_fam1')))
-    hook_handles.append(model.encoder.fam_modules[2].register_forward_hook(get_hook('6_fam2')))
-    hook_handles.append(model.encoder.fam_modules[3].register_forward_hook(get_hook('6_fam3')))
+    print(f"\n🎉 完成，去看 {SAVE_ROOT}/")
 
-    hook_handles.append(model.detector.tb1.register_forward_hook(get_hook('7_tb1')))
-
-    hook_handles.append(model.detector.p1_head.register_forward_hook(get_hook('8_p1')))
-
-    hook_handles.append(model.detector.edge.register_forward_hook(get_hook('9_edge')))
-
-
-    print("4. 正在读取并预处理图片...")
-    img_path = "/home/linweixuan/ChangeDINO/datasets/ESDIs-SOD/test/images/10_11.jpg"
-    # img_path = "/root/autodl-tmp/ChangeDINO/datasets/ESDIs-SOD/test/images/10_11.jpg"
-
-    if not os.path.exists(img_path):
-        print(f"❌ 找不到图片：{img_path}")
-        return
-
-    img = Image.open(img_path).convert('RGB')
-    transform = transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.ToTensor(),
-        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-    ])
-    input_tensor = transform(img).unsqueeze(0).to(device)
-
-    print("5. 正在进行前向推理...")
-    with torch.no_grad():
-        model._forward(input_tensor)
-
-    print("6. 正在绘制特征热力图...")
-    # 推理完成后，dino_features 字典里已经装满了我们要的特征
-    save_dir = "vis_results_10_11_7"
-    for layer_name in sorted(all_features.keys()):
-        print(f"   -> 保存 {layer_name} 特征图...")
-        feat_data = all_features[layer_name]
-        save_feature_map(feat_data, layer_name, save_dir=save_dir)
-
-    # 用完后拆除钩子
-    for handle in hook_handles:
-        handle.remove()
-
-    print(f"\n🎉 大功告成！请去工程目录下的 {save_dir} 文件夹查看特征热力图！")
 
 if __name__ == "__main__":
     main()
