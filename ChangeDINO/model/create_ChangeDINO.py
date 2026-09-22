@@ -5,8 +5,6 @@ import torch.nn.functional as F
 from einops import rearrange
 import os
 import torch.optim as optim
-from .loss.focal import FocalLoss
-from .loss.dice import DICELoss
 from .loss.boundary import BoundaryLoss
 from .loss.hybrid_loss import HybridLoss
 

@@ -239,7 +239,7 @@ class Encoder(nn.Module):
         self.defect_adapter = LinearAdapter(
             in_dim=1024,
             out_dim=dense_out_dim,  # 即 256
-            sizes=(128, 64, 32, 16)
+            sizes=(192, 96, 48, 24)
         )
 
         self.pff = PyramidFeatureFusion(
@@ -390,26 +390,26 @@ class Decoder(nn.Module):
 
         fea1, fea2, fea3, fea4 = xs
 
-        fea4_up = F.interpolate(fea4, size=(128, 128), mode="bilinear", align_corners=False)
+        fea4_up = F.interpolate(fea4, size=(192, 192), mode="bilinear", align_corners=False)
         edge_input = fea1 + fea4_up
         edge_mask = self.edge(edge_input)
 
-        edge_mask_4 = F.interpolate(edge_mask, size=(16, 16), mode="bilinear", align_corners=False)
+        edge_mask_4 = F.interpolate(edge_mask, size=(24, 24), mode="bilinear", align_corners=False)
         fea4E = torch.cat([edge_mask_4, fea4], dim=1)
         t4 = self.conv4(fea4E)
         fea4D = self.tb4(t4)
 
-        edge_mask_3 = F.interpolate(edge_mask, size=(32, 32), mode="bilinear", align_corners=False)
+        edge_mask_3 = F.interpolate(edge_mask, size=(48, 48), mode="bilinear", align_corners=False)
         fea3E = torch.cat([edge_mask_3, fea3], dim=1)
         t3 = self.conv3(fea3E)
         fea3D = self.tb3(self.p4_to_p3(fea4D, t3))
 
-        edge_mask_2 = F.interpolate(edge_mask, size=(64, 64), mode="bilinear", align_corners=False)
+        edge_mask_2 = F.interpolate(edge_mask, size=(96, 96), mode="bilinear", align_corners=False)
         fea2E = torch.cat([edge_mask_2, fea2], dim=1)
         t2 = self.conv2(fea2E)
         fea2D = self.convD2(self.p3_to_p2(fea3D, t2))
 
-        edge_mask_1 = F.interpolate(edge_mask, size=(128, 128), mode="bilinear", align_corners=False)
+        edge_mask_1 = F.interpolate(edge_mask, size=(192, 192), mode="bilinear", align_corners=False)
         fea1E = torch.cat([edge_mask_1, fea1], dim=1)
         t1 = self.conv1(fea1E)
         fea1D = self.convD1(self.p2_to_p1(fea2D, t1))
@@ -418,7 +418,7 @@ class Decoder(nn.Module):
 
         # 3. 上采样到统一尺寸
         pred_p1 = F.interpolate(
-            pred_p1, size=(256, 256), mode="bilinear", align_corners=False
+            pred_p1, size=(384, 384), mode="bilinear", align_corners=False
         )
 
         edge_mask = self.conv5(edge_mask)
