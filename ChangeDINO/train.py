@@ -141,6 +141,7 @@ def train(opt):
                   + " ".join("%s: %.6f" % (k, v) for k, v in scores.items()))
 
             current_score = scores["wFmeasure"]
+            # current_score = scores["Smeasure"]
             if current_score >= previous_best:
                 net.save(opt.name, opt.backbone)
                 previous_best = current_score
@@ -154,5 +155,5 @@ def train(opt):
 
 if __name__ == "__main__":
     opt = Options().parse()
-    setup_seed(seed=opt.seed)
     train(opt)
+    setup_seed(seed=opt.seed)

@@ -27,11 +27,8 @@ class Load_Dataset(Dataset):
         self.opt = opt
         self.is_train = (opt.phase == "train")
 
-        # self.image_resize = transforms.Resize((256, 256), interpolation=InterpolationMode.BILINEAR)
-        # self.label_resize = transforms.Resize((256, 256), interpolation=InterpolationMode.NEAREST)
-
-        self.image_resize = transforms.Resize((384, 384), interpolation=InterpolationMode.BILINEAR)
-        self.label_resize = transforms.Resize((384, 384), interpolation=InterpolationMode.NEAREST)
+        self.image_resize = transforms.Resize((256, 256), interpolation=InterpolationMode.BILINEAR)
+        self.label_resize = transforms.Resize((256, 256), interpolation=InterpolationMode.NEAREST)
 
         self.image_dir = os.path.join(opt.dataroot, opt.dataset, opt.phase, "images")
         self.image_paths, self.fnames = make_dataset(self.image_dir)

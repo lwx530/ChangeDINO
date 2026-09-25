@@ -52,7 +52,6 @@ class Model(nn.Module):
         # loss3 = self.hybrid_loss(pred3, label)
         # loss4 = self.hybrid_loss(pred4, label)
 
-
         edge_mask_up = F.interpolate(
             edge_mask,
             size=label.shape[-2:],  # 获取 label 的 H, W

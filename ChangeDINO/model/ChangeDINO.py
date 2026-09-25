@@ -9,7 +9,7 @@ from .blocks.adapter import DINOV3Wrapper, LinearAdapter, ConvOut
 from .blocks.diffatts import TransformerBlock
 from .backbone.mobilenetv2 import mobilenet_v2
 from .blocks.freq_fusion import FreqFusionBlock
-
+from .blocks.LGA_CGA import HybridLGA_CGA
 
 class EdgeExtraction(nn.Module):
     def __init__(self, in_channels=128):
@@ -71,69 +71,69 @@ def get_backbone(backbone_name):
     return backbone
 
 
-class SE_Block(nn.Module):
-    def __init__(self, channel, reduction=16):
-        super().__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(channel, channel // reduction, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(channel // reduction, channel, bias=False),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        b, c, _, _ = x.size()
-        y = self.avg_pool(x).view(b, c)
-        y = self.fc(y).view(b, c, 1, 1)
-        return x * y
-
-
-class LGA(nn.Module):
-    def __init__(self, dim1=128, dim2=256, out_dim=128):
-        super().__init__()
-        # 从模态2生成模态1的门控 (DINO 指导 CNN)
-        self.gate2_to_1 = nn.Sequential(
-            nn.AvgPool2d(kernel_size=3, stride=1, padding=1),
-            nn.Conv2d(dim2, dim1, kernel_size=3, padding=1),
-            nn.Sigmoid()
-        )
-        # 从模态1生成模态2的门控 (CNN 指导 DINO)
-        self.gate1_to_2 = nn.Sequential(
-            nn.AvgPool2d(kernel_size=3, stride=1, padding=1),
-            nn.Conv2d(dim1, dim2, kernel_size=3, padding=1),
-            nn.Sigmoid()
-        )
-
-        self.se1 = SE_Block(dim1)
-        self.se2 = SE_Block(dim2)
-
-        # 论文中的两层 1x1 卷积 Channel Mixer
-        self.channel_mixer = nn.Sequential(
-            nn.Conv2d(dim1 + dim2, out_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_dim),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_dim, out_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_dim),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, x1, x2):
-        # x1: CNN 特征, x2: DINO 特征
-        g1 = self.gate1_to_2(x1)
-        g2 = self.gate2_to_1(x2)
-
-        # 跨模态门控交互 (残差连接 + 逐元素乘法)
-        x1_hat = x1 + g2 * x1
-        x2_hat = x2 + g1 * x2
-
-        # 独立SE重标定
-        x1_se = self.se1(x1_hat)
-        x2_se = self.se2(x2_hat)
-
-        # 拼接与通道降维混合
-        out = torch.cat([x1_se, x2_se], dim=1)
-        return self.channel_mixer(out)
+# class SE_Block(nn.Module):
+#     def __init__(self, channel, reduction=16):
+#         super().__init__()
+#         self.avg_pool = nn.AdaptiveAvgPool2d(1)
+#         self.fc = nn.Sequential(
+#             nn.Linear(channel, channel // reduction, bias=False),
+#             nn.ReLU(inplace=True),
+#             nn.Linear(channel // reduction, channel, bias=False),
+#             nn.Sigmoid()
+#         )
+#
+#     def forward(self, x):
+#         b, c, _, _ = x.size()
+#         y = self.avg_pool(x).view(b, c)
+#         y = self.fc(y).view(b, c, 1, 1)
+#         return x * y
+#
+#
+# class LGA(nn.Module):
+#     def __init__(self, dim1=128, dim2=256, out_dim=128):
+#         super().__init__()
+#         # 从模态2生成模态1的门控 (DINO 指导 CNN)
+#         self.gate2_to_1 = nn.Sequential(
+#             nn.AvgPool2d(kernel_size=3, stride=1, padding=1),
+#             nn.Conv2d(dim2, dim1, kernel_size=3, padding=1),
+#             nn.Sigmoid()
+#         )
+#         # 从模态1生成模态2的门控 (CNN 指导 DINO)
+#         self.gate1_to_2 = nn.Sequential(
+#             nn.AvgPool2d(kernel_size=3, stride=1, padding=1),
+#             nn.Conv2d(dim1, dim2, kernel_size=3, padding=1),
+#             nn.Sigmoid()
+#         )
+#
+#         self.se1 = SE_Block(dim1)
+#         self.se2 = SE_Block(dim2)
+#
+#         # 论文中的两层 1x1 卷积 Channel Mixer
+#         self.channel_mixer = nn.Sequential(
+#             nn.Conv2d(dim1 + dim2, out_dim, kernel_size=1, bias=False),
+#             nn.BatchNorm2d(out_dim),
+#             nn.ReLU(inplace=True),
+#             nn.Conv2d(out_dim, out_dim, kernel_size=1, bias=False),
+#             nn.BatchNorm2d(out_dim),
+#             nn.ReLU(inplace=True)
+#         )
+#
+#     def forward(self, x1, x2):
+#         # x1: CNN 特征, x2: DINO 特征
+#         g1 = self.gate1_to_2(x1)
+#         g2 = self.gate2_to_1(x2)
+#
+#         # 跨模态门控交互 (残差连接 + 逐元素乘法)
+#         x1_hat = x1 + g2 * x1
+#         x2_hat = x2 + g1 * x2
+#
+#         # 独立SE重标定
+#         x1_se = self.se1(x1_hat)
+#         x2_se = self.se2(x2_hat)
+#
+#         # 拼接与通道降维混合
+#         out = torch.cat([x1_se, x2_se], dim=1)
+#         return self.channel_mixer(out)
 
 
 # 使用 LGA 替换原本的 PFF
@@ -152,10 +152,10 @@ class PyramidFeatureFusion(nn.Module):
         self.patch_size = patch_size
 
         # 实例化四个尺度的 LGA 融合模块
-        self.lga4 = LGA(dim1=in_dims[3], dim2=hidden_dim, out_dim=in_dims[3])
-        self.lga3 = LGA(dim1=in_dims[2], dim2=hidden_dim, out_dim=in_dims[2])
-        self.lga2 = LGA(dim1=in_dims[1], dim2=hidden_dim, out_dim=in_dims[1])
-        self.lga1 = LGA(dim1=in_dims[0], dim2=hidden_dim, out_dim=in_dims[0])
+        self.lga4 = HybridLGA_CGA(dim1=in_dims[3], dim2=hidden_dim, out_dim=in_dims[3])
+        self.lga3 = HybridLGA_CGA(dim1=in_dims[2], dim2=hidden_dim, out_dim=in_dims[2])
+        self.lga2 = HybridLGA_CGA(dim1=in_dims[1], dim2=hidden_dim, out_dim=in_dims[1])
+        self.lga1 = HybridLGA_CGA(dim1=in_dims[0], dim2=hidden_dim, out_dim=in_dims[0])
 
     def forward(self, feas, ds_fea):
         x1, x2, x3, x4 = feas  # CNN特征: [B, 128, H, W]
@@ -239,7 +239,7 @@ class Encoder(nn.Module):
         self.defect_adapter = LinearAdapter(
             in_dim=1024,
             out_dim=dense_out_dim,  # 即 256
-            sizes=(192, 96, 48, 24)
+            sizes=(128, 64, 32, 16)
         )
 
         self.pff = PyramidFeatureFusion(
@@ -390,26 +390,26 @@ class Decoder(nn.Module):
 
         fea1, fea2, fea3, fea4 = xs
 
-        fea4_up = F.interpolate(fea4, size=(192, 192), mode="bilinear", align_corners=False)
+        fea4_up = F.interpolate(fea4, size=(128, 128), mode="bilinear", align_corners=False)
         edge_input = fea1 + fea4_up
         edge_mask = self.edge(edge_input)
 
-        edge_mask_4 = F.interpolate(edge_mask, size=(24, 24), mode="bilinear", align_corners=False)
+        edge_mask_4 = F.interpolate(edge_mask, size=(16, 16), mode="bilinear", align_corners=False)
         fea4E = torch.cat([edge_mask_4, fea4], dim=1)
         t4 = self.conv4(fea4E)
         fea4D = self.tb4(t4)
 
-        edge_mask_3 = F.interpolate(edge_mask, size=(48, 48), mode="bilinear", align_corners=False)
+        edge_mask_3 = F.interpolate(edge_mask, size=(32, 32), mode="bilinear", align_corners=False)
         fea3E = torch.cat([edge_mask_3, fea3], dim=1)
         t3 = self.conv3(fea3E)
         fea3D = self.tb3(self.p4_to_p3(fea4D, t3))
 
-        edge_mask_2 = F.interpolate(edge_mask, size=(96, 96), mode="bilinear", align_corners=False)
+        edge_mask_2 = F.interpolate(edge_mask, size=(64, 64), mode="bilinear", align_corners=False)
         fea2E = torch.cat([edge_mask_2, fea2], dim=1)
         t2 = self.conv2(fea2E)
         fea2D = self.convD2(self.p3_to_p2(fea3D, t2))
 
-        edge_mask_1 = F.interpolate(edge_mask, size=(192, 192), mode="bilinear", align_corners=False)
+        edge_mask_1 = F.interpolate(edge_mask, size=(128, 128), mode="bilinear", align_corners=False)
         fea1E = torch.cat([edge_mask_1, fea1], dim=1)
         t1 = self.conv1(fea1E)
         fea1D = self.convD1(self.p2_to_p1(fea2D, t1))
@@ -418,7 +418,7 @@ class Decoder(nn.Module):
 
         # 3. 上采样到统一尺寸
         pred_p1 = F.interpolate(
-            pred_p1, size=(384, 384), mode="bilinear", align_corners=False
+            pred_p1, size=(256, 256), mode="bilinear", align_corners=False
         )
 
         edge_mask = self.conv5(edge_mask)

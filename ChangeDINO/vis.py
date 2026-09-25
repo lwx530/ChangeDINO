@@ -13,13 +13,13 @@ from model.ChangeDINO import ChangeModel
 
 
 # ==================== 配置 ====================
-WEIGHT_PATH = "/home/linweixuan/ChangeDINO/checkpoints/ESDI-7/ESDI-7_resnet34_best.pth"
+WEIGHT_PATH = "/home/linweixuan/ChangeDINO/checkpoints/ESDI-18/ESDI-18_resnet34_best.pth"
 DATA_ROOT   = "/home/linweixuan/ChangeDINO/datasets/ESDIs-SOD/test"
 IMG_SIZE    = 256
 SAVE_ROOT   = "vis_results"
 
 # 想多看几张就加名字（不带扩展名）
-IMG_NAMES = ["1_8","1_19","7_4","10_9"]
+IMG_NAMES = ["7_34","1_34","6_30","10_52"]
 # =============================================
 
 

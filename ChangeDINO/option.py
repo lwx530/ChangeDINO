@@ -9,7 +9,7 @@ class Options:
     def init(self):
 
         self.parser.add_argument("--gpu_ids", type=str, default="2", help="gpu ids: e.g. 0. use -1 for CPU")
-        self.parser.add_argument("--name", type=str, default="ESDI-15")
+        self.parser.add_argument("--name", type=str, default="ESDI-20")
         self.parser.add_argument("--dataroot", type=str, default="/home/linweixuan/ChangeDINO/datasets")
         self.parser.add_argument("--dataset", type=str, default="ESDIs-SOD")
         self.parser.add_argument("--checkpoint_dir", type=str, default="./checkpoints", help="models are saved here")
