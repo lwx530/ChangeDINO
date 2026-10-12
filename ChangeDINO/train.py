@@ -155,5 +155,5 @@ def train(opt):
 
 if __name__ == "__main__":
     opt = Options().parse()
-    train(opt)
     setup_seed(seed=opt.seed)
+    train(opt)

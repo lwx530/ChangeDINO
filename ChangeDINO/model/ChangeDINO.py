@@ -2,46 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import timm
-import os
-import matplotlib.pyplot as plt
-import numpy as np
-from .blocks.adapter import DINOV3Wrapper, LinearAdapter, ConvOut
-from .blocks.diffatts import TransformerBlock
+from .blocks.adapter import DINOV3Wrapper, LinearAdapter
 from .backbone.mobilenetv2 import mobilenet_v2
-from .blocks.freq_fusion import FreqFusionBlock
-from .blocks.LGA_CGA import HybridLGA_CGA
-
-class EdgeExtraction(nn.Module):
-    def __init__(self, in_channels=128):
-        super().__init__()
-
-        self.edge = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(in_channels),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, x):
-        return self.edge(x)
-
-
-class DsBnRelu(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, dilation=1):
-        super(DsBnRelu, self).__init__()
-        self.kernel_size = kernel_size
-        self.depthwise = nn.Conv2d(in_channels, in_channels, kernel_size, stride, padding,
-                                   dilation, groups=in_channels, bias=False)
-        self.pointwise = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
-        self.bn = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(True)
-
-    def forward(self, x):
-        if self.kernel_size != 1:
-            x = self.depthwise(x)
-        x = self.pointwise(x)
-        x = self.bn(x)
-        x = self.relu(x)
-        return x
+from .blocks.cfsb import CFSB
 
 
 def get_backbone(backbone_name):
@@ -54,393 +17,333 @@ def get_backbone(backbone_name):
     elif backbone_name == "resnet34":
         backbone = timm.create_model("resnet34", pretrained=True, features_only=True)
         backbone.channels = [64, 64, 128, 256, 512]
-    #     state_dict = torch.load(
-    #         "/home/linweixuan/ChangeDINO/model/backbone/resnet34-b627a593.pth",
-    #         map_location="cpu",
-    #         weights_only=True
-    #     )
-    #     if "state_dict" in state_dict:
-    #         state_dict = state_dict["state_dict"]
-    #     elif "model" in state_dict:
-    #         state_dict = state_dict["model"]
-    #     state_dict.pop("fc.weight", None)
-    #     state_dict.pop("fc.bias", None)
-    #     backbone.load_state_dict(state_dict, strict=True)
-    # else:
-    #     raise NotImplementedError("BACKBONE [%s] is not implemented!\n" % backbone_name)
     return backbone
 
 
-# class SE_Block(nn.Module):
-#     def __init__(self, channel, reduction=16):
-#         super().__init__()
-#         self.avg_pool = nn.AdaptiveAvgPool2d(1)
-#         self.fc = nn.Sequential(
-#             nn.Linear(channel, channel // reduction, bias=False),
-#             nn.ReLU(inplace=True),
-#             nn.Linear(channel // reduction, channel, bias=False),
-#             nn.Sigmoid()
-#         )
-#
-#     def forward(self, x):
-#         b, c, _, _ = x.size()
-#         y = self.avg_pool(x).view(b, c)
-#         y = self.fc(y).view(b, c, 1, 1)
-#         return x * y
-#
-#
-# class LGA(nn.Module):
-#     def __init__(self, dim1=128, dim2=256, out_dim=128):
-#         super().__init__()
-#         # 从模态2生成模态1的门控 (DINO 指导 CNN)
-#         self.gate2_to_1 = nn.Sequential(
-#             nn.AvgPool2d(kernel_size=3, stride=1, padding=1),
-#             nn.Conv2d(dim2, dim1, kernel_size=3, padding=1),
-#             nn.Sigmoid()
-#         )
-#         # 从模态1生成模态2的门控 (CNN 指导 DINO)
-#         self.gate1_to_2 = nn.Sequential(
-#             nn.AvgPool2d(kernel_size=3, stride=1, padding=1),
-#             nn.Conv2d(dim1, dim2, kernel_size=3, padding=1),
-#             nn.Sigmoid()
-#         )
-#
-#         self.se1 = SE_Block(dim1)
-#         self.se2 = SE_Block(dim2)
-#
-#         # 论文中的两层 1x1 卷积 Channel Mixer
-#         self.channel_mixer = nn.Sequential(
-#             nn.Conv2d(dim1 + dim2, out_dim, kernel_size=1, bias=False),
-#             nn.BatchNorm2d(out_dim),
-#             nn.ReLU(inplace=True),
-#             nn.Conv2d(out_dim, out_dim, kernel_size=1, bias=False),
-#             nn.BatchNorm2d(out_dim),
-#             nn.ReLU(inplace=True)
-#         )
-#
-#     def forward(self, x1, x2):
-#         # x1: CNN 特征, x2: DINO 特征
-#         g1 = self.gate1_to_2(x1)
-#         g2 = self.gate2_to_1(x2)
-#
-#         # 跨模态门控交互 (残差连接 + 逐元素乘法)
-#         x1_hat = x1 + g2 * x1
-#         x2_hat = x2 + g1 * x2
-#
-#         # 独立SE重标定
-#         x1_se = self.se1(x1_hat)
-#         x2_se = self.se2(x2_hat)
-#
-#         # 拼接与通道降维混合
-#         out = torch.cat([x1_se, x2_se], dim=1)
-#         return self.channel_mixer(out)
 
-
-# 使用 LGA 替换原本的 PFF
-class PyramidFeatureFusion(nn.Module):
-    def __init__(
-            self,
-            in_dims=[128, 128, 128, 128],
-            dense_dim=1024,
-            patch_size=16,
-            hidden_dim=256,
-    ):
+class DepthwiseSeparableConv(nn.Module):
+    def __init__(self, in_ch, out_ch):
         super().__init__()
-        self.in_dims = in_dims
-        self.dense_dim = dense_dim
-        self.hidden_dim = hidden_dim
-        self.patch_size = patch_size
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, in_ch, kernel_size=3, padding=1, groups=in_ch, bias=False),
+            nn.BatchNorm2d(in_ch),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True)
+        )
 
-        # 实例化四个尺度的 LGA 融合模块
-        self.lga4 = HybridLGA_CGA(dim1=in_dims[3], dim2=hidden_dim, out_dim=in_dims[3])
-        self.lga3 = HybridLGA_CGA(dim1=in_dims[2], dim2=hidden_dim, out_dim=in_dims[2])
-        self.lga2 = HybridLGA_CGA(dim1=in_dims[1], dim2=hidden_dim, out_dim=in_dims[1])
-        self.lga1 = HybridLGA_CGA(dim1=in_dims[0], dim2=hidden_dim, out_dim=in_dims[0])
-
-    def forward(self, feas, ds_fea):
-        x1, x2, x3, x4 = feas  # CNN特征: [B, 128, H, W]
-        a1, a2, a3, a4 = ds_fea  # DINO特征: [B, 256, H, W]
-
-        # 依次通过各个尺度的双向 LGA 融合
-        x4_out = self.lga4(x4, a4)
-        x3_out = self.lga3(x3, a3)
-        x2_out = self.lga2(x2, a2)
-        x1_out = self.lga1(x1, a1)
-
-        return x1_out, x2_out, x3_out, x4_out
+    def forward(self, x):
+        return self.conv(x)
 
 
-class DINOguidedNoiseSuppress(nn.Module):
-    def __init__(self, cnn_dim=128, dino_dim=256):
+class POE(nn.Module):
+
+    def __init__(self, in_dim):
         super().__init__()
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        self.conv1x1 = nn.Sequential(
+            nn.Conv2d(in_dim * 2, in_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(in_dim),
+            nn.ReLU(inplace=True)
+        )
 
-        self.gates = nn.ModuleList([
+    def forward(self, f_target, f_source, s_gl):
+        # 掩码空间对齐并截断置信度
+        if s_gl.shape[-2:] != f_source.shape[-2:]:
+            s_gl = F.interpolate(s_gl, size=f_source.shape[-2:], mode="bilinear", align_corners=False)
+        mask = torch.sigmoid(s_gl)
+
+        # Prototype = E(GAP(S_GL * F_source))
+        proto = self.gap(mask * f_source)
+        proto_exp = proto.expand_as(f_target)
+
+        # Conv1x1(Cat[F_target, proto])
+        return self.conv1x1(torch.cat([f_target, proto_exp], dim=1))
+
+
+class CPOE(nn.Module):
+
+    def __init__(self, cnn_dim, dino_dim, out_dim):
+        super().__init__()
+        # 深度可分离卷积调整两路通道至 out_dim
+        self.dw_r = DepthwiseSeparableConv(cnn_dim, out_dim)
+        self.dw_m = DepthwiseSeparableConv(dino_dim, out_dim)
+
+        # 粗分割预测头 S_GL，同时用于提供逐层深监督
+        self.coarse_conv = nn.Sequential(
+            nn.Conv2d(out_dim * 2, out_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_dim, 1, kernel_size=1)
+        )
+
+        self.poe_m2r = POE(out_dim)  # Global -> Local
+        self.poe_r2m = POE(out_dim)  # Local -> Global
+
+        self.fuse_conv = nn.Sequential(
+            nn.Conv2d(out_dim * 2, out_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_dim),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, f_r, f_m):
+        # 1. 深度可分离卷积调整通道
+        f_dr = self.dw_r(f_r)
+        f_dm = self.dw_m(f_m)
+
+        # 尺寸对齐 (以 CNN 分支空间尺寸为基准)
+        if f_dm.shape[-2:] != f_dr.shape[-2:]:
+            f_dm = F.interpolate(f_dm, size=f_dr.shape[-2:], mode="bilinear", align_corners=False)
+
+        # 2. 生成粗分割掩码 S_GL
+        s_gl = self.coarse_conv(torch.cat([f_dr, f_dm], dim=1))
+
+        # 3. 跨原型注入增强 (公式 1 与 2)
+        f_rm = self.poe_m2r(f_dr, f_dm, s_gl)
+        f_mr = self.poe_r2m(f_dm, f_dr, s_gl)
+
+        f_rm_prime = f_dr + f_dr * f_rm
+        f_dm_prime = f_dm + f_dm * f_mr
+
+        # 4. 拼接并通过 1x1 卷积输出 F_CP
+        f_cp = self.fuse_conv(torch.cat([f_dm_prime, f_rm_prime], dim=1))
+        return f_cp, s_gl
+
+
+class S_Gate(nn.Module):
+
+    def __init__(self, in_dim, num_gates=4):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_dim, in_dim // 4, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_dim // 4, num_gates, kernel_size=1),
+            nn.Softmax(dim=1)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class SSA(nn.Module):
+
+    def __init__(self, in_dim):
+        super().__init__()
+        self.gate = S_Gate(in_dim, 4)
+        self.dw_conv = nn.Conv2d(in_dim, 1, kernel_size=3, padding=1, groups=1, bias=False)
+        self.cn2 = nn.Conv2d(in_dim, 1, kernel_size=1, bias=False)
+        self.cn3 = nn.Conv2d(in_dim, 1, kernel_size=3, padding=1, bias=False)
+        self.cn4 = nn.Conv2d(in_dim, 1, kernel_size=5, padding=2, bias=False)
+
+    def forward(self, x):
+        gates = self.gate(x)  # [B, 4, 1, 1]
+
+        m1 = self.dw_conv(x) * gates[:, 0:1]
+        m2 = self.cn2(x) * gates[:, 1:2]
+        m3 = self.cn3(x) * gates[:, 2:3]
+        m4 = self.cn4(x) * gates[:, 3:4]
+
+        return torch.sigmoid(m1 + m2 + m3 + m4)
+
+
+class SCA(nn.Module):
+
+    def __init__(self, in_dim):
+        super().__init__()
+        self.gate = S_Gate(in_dim, 4)
+        self.gap = nn.AdaptiveAvgPool2d(1)
+
+        # 4 个不同压缩比的 MLP (4, 8, 16, 32)
+        ratios = [4, 8, 16, 32]
+        self.mlps = nn.ModuleList([
             nn.Sequential(
-                nn.Conv2d(cnn_dim + dino_dim, cnn_dim, kernel_size=1, bias=False),
-                nn.BatchNorm2d(cnn_dim),
+                nn.Conv2d(in_dim, max(in_dim // r, 4), kernel_size=1),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(cnn_dim, 1, kernel_size=1, bias=True),
-                nn.Sigmoid()
-            )
-            for _ in range(4)
+                nn.Conv2d(max(in_dim // r, 4), in_dim, kernel_size=1)
+            ) for r in ratios
         ])
 
-    def forward(self, cnn_feats, dino_feats):
-        outs = []
+    def forward(self, x):
+        gates = self.gate(x)  # [B, 4, 1, 1]
+        gap_x = self.gap(x)
 
-        for i in range(4):
-            cnn = cnn_feats[i]
-            dino = dino_feats[i]
+        c_att = sum(self.mlps[i](gap_x) * gates[:, i:i + 1] for i in range(4))
+        return torch.sigmoid(c_att)
 
-            if dino.shape[-2:] != cnn.shape[-2:]:
-                dino = F.interpolate(
-                    dino,
-                    size=cnn.shape[-2:],
-                    mode="bilinear",
-                    align_corners=False
-                )
 
-            gate = self.gates[i](torch.cat([cnn, dino], dim=1))
+class SSCA(nn.Module):
 
-            # 保守抑制：避免一开始把 CNN 特征压没
-            clean = cnn * (0.5 + gate)
+    def __init__(self, in_dim):
+        super().__init__()
+        self.ssa = SSA(in_dim)
+        self.sca = SCA(in_dim)
 
-            outs.append(clean)
+    def forward(self, f_m):
+        a_s = self.ssa(f_m)
+        a_c = self.sca(f_m)
+        return f_m + f_m * a_c * a_s
 
-        return outs
 
+class UpsampleBlock(nn.Module):
+
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+        self.convs = nn.Sequential(
+            nn.Conv2d(in_dim, out_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_dim, out_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_dim),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x, target_size=None):
+        x = self.convs(x)
+        if target_size is not None:
+            return F.interpolate(x, size=target_size, mode="bilinear", align_corners=False)
+        return F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+
+
+class GLFModule(nn.Module):
+
+    def __init__(self, cnn_dim=64, dino_dim=128, out_dim=64):
+        super().__init__()
+        self.cpoe = CPOE(cnn_dim, dino_dim, out_dim)
+
+        self.cfsb = CFSB(in_channels=dino_dim)
+        # self.ssca = SSCA(dino_dim)
+
+        self.proj_sc = nn.Sequential(
+            nn.Conv2d(dino_dim, out_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_dim),
+            nn.ReLU(inplace=True)
+        )
+
+        # Cat[F_SC, F_CP, F_GL_deeper] -> out_dim * 3
+        self.upsample = UpsampleBlock(in_dim=out_dim * 3, out_dim=out_dim)
+
+    def forward(self, f_r, f_m, f_gl_deeper=None):
+        # 1. CPOE 交互提取 F_CP 与深监督粗掩码 s_gl
+        f_cp, s_gl = self.cpoe(f_r, f_m)
+        target_size = f_cp.shape[-2:]
+
+        # f_sc = self.proj_sc(self.ssca(f_m))
+        f_sc = self.proj_sc(self.cfsb(f_m))
+        if f_sc.shape[-2:] != target_size:
+            f_sc = F.interpolate(f_sc, size=target_size, mode="bilinear", align_corners=False)
+
+        # 3. 对齐深层特征 F_GL_deeper
+        if f_gl_deeper is None:
+            f_gl_deeper = f_cp
+        else:
+            if f_gl_deeper.shape[-2:] != target_size:
+                f_gl_deeper = F.interpolate(f_gl_deeper, size=target_size, mode="bilinear", align_corners=False)
+
+        # 4. 汇聚并上采样 (公式 5)
+        f_gl = self.upsample(torch.cat([f_sc, f_cp, f_gl_deeper], dim=1))
+        return f_gl, s_gl
 
 class Encoder(nn.Module):
     def __init__(
             self,
             backbone="resnet34",
-            fpn_channels=128,
+            fpn_channels=64,
             dino_weight="dinov3/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
             device="cuda",
             extract_ids=[5, 11, 17, 23],
-            # extract_ids=list(range(24)),
             **kwargs,
     ):
         super().__init__()
-        self.backbone_name = backbone
         self.backbone = get_backbone(backbone)
         self.backbone_channels = self.backbone.channels
-        self.cnn_proj = nn.ModuleList([
+
+        # CNN 分支：统一到 fpn_channels (64)
+        self.cnn_projs = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(self.backbone_channels[i], fpn_channels, kernel_size=1, bias=False),
                 nn.BatchNorm2d(fpn_channels),
-                nn.ReLU(inplace=True),
+                nn.ReLU(inplace=True)
             ) for i in range(4)
         ])
 
+        # DINO 分支：统一到 fpn_channels * 2 (128)
         dense_out_dim = fpn_channels * 2
         self.dino = DINOV3Wrapper(weights_path=dino_weight, device=device, extract_ids=extract_ids)
-
         self.defect_adapter = LinearAdapter(
             in_dim=1024,
-            out_dim=dense_out_dim,  # 即 256
+            out_dim=dense_out_dim,  # 128 通道，完全保留原版设计
             sizes=(128, 64, 32, 16)
         )
 
-        self.pff = PyramidFeatureFusion(
-            in_dims=[128, 128, 128, 128],
-            dense_dim=1024,
-            patch_size=16,
-            hidden_dim=256,
-        )
-
-        self.noise_suppress = DINOguidedNoiseSuppress(
-            cnn_dim=fpn_channels,
-            dino_dim=dense_out_dim
-        )
-
     def forward(self, x):
-        fea = self.backbone(x)   # 通道数为64，64，128，256，512
+        c_raw = self.backbone(x)
+        cnn_feats = [self.cnn_projs[i](c_raw[i]) for i in range(4)]  # 4 个 64 通道特征
 
-        fea = [self.cnn_proj[i](fea[i]) for i in range(4)]   # 通道统一到128
+        d_raw = self.dino(x)
+        dino_feats = self.defect_adapter(d_raw)  # 4 个 128 通道特征
 
-        raw_ds_fea = self.dino(x)  # 获取24层
-
-        ds_fea_adapted = self.defect_adapter(raw_ds_fea)  # 尺寸和CNN特征对齐，[128,64,32,16]，通道数降到256
-
-        fea = self.noise_suppress(fea, ds_fea_adapted)
-
-        final_fea = self.pff(fea, ds_fea_adapted)
-
-        return final_fea
-
-
-class FuseGated(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.gate = nn.Sequential(
-            nn.Conv2d(2 * dim, dim, 1, bias=True),
-            nn.Sigmoid()
-        )
-        self.mix = nn.Sequential(
-            nn.Conv2d(dim, dim, 3, padding=1, bias=False),
-            nn.BatchNorm2d(dim),
-            nn.SiLU(inplace=True),
-        )
-
-    def forward(self, x1, x2):
-        x1 = F.interpolate(x1, size=x2.shape[-2:], mode="bilinear", align_corners=False)
-        g = self.gate(torch.cat([x1, x2], dim=1))
-        fused = x2 + g * x1
-        return self.mix(fused)
-
-
-class DecoderConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, dilation=2):
-        super().__init__()
-
-        self.block = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=dilation, dilation=dilation, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-        )
-
-    def forward(self, x):
-        return x + self.block(x)
+        return cnn_feats, dino_feats
 
 
 class Decoder(nn.Module):
-    def __init__(
-            self,
-            fpn_channels=128,
-            **kwargs,
-    ):
+    def __init__(self, cnn_dim=64, dino_dim=128, out_dim=64):
         super().__init__()
+        # 4 个阶段的 GLF 单元 (自顶向下: 16 -> 32 -> 64 -> 128)
+        self.glf4 = GLFModule(cnn_dim, dino_dim, out_dim)
+        self.glf3 = GLFModule(cnn_dim, dino_dim, out_dim)
+        self.glf2 = GLFModule(cnn_dim, dino_dim, out_dim)
+        self.glf1 = GLFModule(cnn_dim, dino_dim, out_dim)
 
-        # 保持门控融合模块
-        # self.p4_to_p3 = FuseGated(fpn_channels)
-        # self.p3_to_p2 = FuseGated(fpn_channels)
-        # self.p2_to_p1 = FuseGated(fpn_channels)
-
-        self.p4_to_p3 = FreqFusionBlock(channels=fpn_channels)
-        self.p3_to_p2 = FreqFusionBlock(channels=fpn_channels)
-        self.p2_to_p1 = FreqFusionBlock(channels=fpn_channels)
-
-        self.tb4 = TransformerBlock(
-            dim=fpn_channels,
-            ffn_expansion_factor=2,
-            bias=False,
-            LayerNorm_type="BiasFree")
-
-        self.tb3 = TransformerBlock(
-            dim=fpn_channels,
-            ffn_expansion_factor=2,
-            bias=False,
-            LayerNorm_type="BiasFree")
-
-        self.tb2 = TransformerBlock(
-            dim=fpn_channels,
-            ffn_expansion_factor=2,
-            bias=False,
-            LayerNorm_type="BiasFree")
-
-        self.tb1 = TransformerBlock(
-            dim=fpn_channels,
-            ffn_expansion_factor=2,
-            bias=False,
-            LayerNorm_type="BiasFree")
-
-        self.conv4 = nn.Sequential(
-            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(fpn_channels),
-            nn.ReLU(inplace=True)
-        )
-        self.conv3 = nn.Sequential(
-            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(fpn_channels),
-            nn.ReLU(inplace=True)
-        )
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(fpn_channels),
-            nn.ReLU(inplace=True)
-        )
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(2 * fpn_channels, fpn_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(fpn_channels),
-            nn.ReLU(inplace=True)
+        # 论文公式 (6): S = Up(Cat[F_1^GL, F_1^R])
+        self.final_up = nn.Sequential(
+            nn.Conv2d(out_dim + cnn_dim, out_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_dim, out_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_dim, 1, kernel_size=1)
         )
 
-        self.convD2 = DecoderConvBlock(fpn_channels, fpn_channels, dilation=2)
-        self.convD1 = DecoderConvBlock(fpn_channels, fpn_channels, dilation=1)
+    def forward(self, cnn_feats, dino_feats, raw_img):
+        c1, c2, c3, c4 = cnn_feats   # 4 个 64 通道特征
+        d1, d2, d3, d4 = dino_feats  # 4 个 128 通道特征
 
-        self.edge = EdgeExtraction(in_channels=fpn_channels)
+        # 自顶向下逐级解码，收集各层 S_GL 粗掩码
+        f_gl4, s4 = self.glf4(c4, d4, f_gl_deeper=None)
+        f_gl3, s3 = self.glf3(c3, d3, f_gl_deeper=f_gl4)
+        f_gl2, s2 = self.glf2(c2, d2, f_gl_deeper=f_gl3)
+        f_gl1, s1 = self.glf1(c1, d1, f_gl_deeper=f_gl2)
 
-        self.p4_head = ConvOut(fpn_channels)
-        self.p3_head = ConvOut(fpn_channels)
-        self.p2_head = ConvOut(fpn_channels)
-        self.p1_head = ConvOut(fpn_channels)
+        # 对齐至最浅层并拼接 c1 (128x128)
+        if f_gl1.shape[-2:] != c1.shape[-2:]:
+            f_gl1 = F.interpolate(f_gl1, size=c1.shape[-2:], mode="bilinear", align_corners=False)
 
-        self.conv5 = nn.Conv2d(fpn_channels, 1, kernel_size=1, bias=False)
+        # 最终预测图 S
+        out = self.final_up(torch.cat([f_gl1, c1], dim=1))
+        S = F.interpolate(out, size=raw_img.shape[-2:], mode="bilinear", align_corners=False)
 
-    def forward(self, xs):
-
-        fea1, fea2, fea3, fea4 = xs
-
-        fea4_up = F.interpolate(fea4, size=(128, 128), mode="bilinear", align_corners=False)
-        edge_input = fea1 + fea4_up
-        edge_mask = self.edge(edge_input)
-
-        edge_mask_4 = F.interpolate(edge_mask, size=(16, 16), mode="bilinear", align_corners=False)
-        fea4E = torch.cat([edge_mask_4, fea4], dim=1)
-        t4 = self.conv4(fea4E)
-        fea4D = self.tb4(t4)
-
-        edge_mask_3 = F.interpolate(edge_mask, size=(32, 32), mode="bilinear", align_corners=False)
-        fea3E = torch.cat([edge_mask_3, fea3], dim=1)
-        t3 = self.conv3(fea3E)
-        fea3D = self.tb3(self.p4_to_p3(fea4D, t3))
-
-        edge_mask_2 = F.interpolate(edge_mask, size=(64, 64), mode="bilinear", align_corners=False)
-        fea2E = torch.cat([edge_mask_2, fea2], dim=1)
-        t2 = self.conv2(fea2E)
-        fea2D = self.convD2(self.p3_to_p2(fea3D, t2))
-
-        edge_mask_1 = F.interpolate(edge_mask, size=(128, 128), mode="bilinear", align_corners=False)
-        fea1E = torch.cat([edge_mask_1, fea1], dim=1)
-        t1 = self.conv1(fea1E)
-        fea1D = self.convD1(self.p2_to_p1(fea2D, t1))
-
-        pred_p1 = self.p1_head(fea1D)
-
-        # 3. 上采样到统一尺寸
-        pred_p1 = F.interpolate(
-            pred_p1, size=(256, 256), mode="bilinear", align_corners=False
-        )
-
-        edge_mask = self.conv5(edge_mask)
-
-        return pred_p1, edge_mask
-
+        return S, [s1, s2, s3, s4]
 
 class ChangeModel(nn.Module):
-    def __init__(self, backbone="resnet34", fpn_channels=128, **kwargs):
+    def __init__(self, backbone="resnet34", fpn_channels=64, **kwargs):
         super().__init__()
         self.encoder = Encoder(backbone=backbone, fpn_channels=fpn_channels, **kwargs)
-        self.decoder = Decoder(fpn_channels=fpn_channels, **kwargs)
+        self.decoder = Decoder(
+            cnn_dim=fpn_channels,
+            dino_dim=fpn_channels * 2,
+            out_dim=fpn_channels
+        )
 
     @torch.inference_mode()
     def _forward(self, x):
-        # for inference
-        final_fea = self.encoder(x)
-        pred, _ = self.decoder(final_fea)
-        return pred
+        cnn_feats, dino_feats = self.encoder(x)
+        S, _ = self.decoder(cnn_feats, dino_feats, raw_img=x)
+        return S
 
     def forward(self, x):
-        # for training
-        final_fea = self.encoder(x)
-        pred1, edge_mask = self.decoder(final_fea)
-        return pred1, edge_mask
+        cnn_feats, dino_feats = self.encoder(x)
+        S, coarse_masks = self.decoder(cnn_feats, dino_feats, raw_img=x)
+        return S, coarse_masks

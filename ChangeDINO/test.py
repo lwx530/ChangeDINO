@@ -62,6 +62,10 @@ def evaluate(model, data_loader, save_dir=None):
         "meanFm":    '%.4f' % FM.get_results()["fm"]["curve"].mean(),
         "Smeasure":  '%.4f' % SM.get_results()["sm"],
         "wFmeasure": '%.4f' % WFM.get_results()["wfm"],
+        "adpEm":     '%.4f' % EM.get_results()["em"]["adp"],
+        "adpFm":     '%.4f' % FM.get_results()["fm"]["adp"],
+        "maxEm":     '%.4f' % EM.get_results()["em"]["curve"].max(),
+        "maxFm":     '%.4f' % FM.get_results()["fm"]["curve"].max(),
     }
     print(results)
 

@@ -45,24 +45,22 @@ class Model(nn.Module):
         self.model.cuda()
 
     def forward(self, x, label):
-        pred1, edge_mask = self.model(x)
+        pred_s, coarse_masks = self.model(x)
         label = label.long()
-        loss1 = self.hybrid_loss(pred1, label)
-        # loss2 = self.hybrid_loss(pred2, label)
-        # loss3 = self.hybrid_loss(pred3, label)
-        # loss4 = self.hybrid_loss(pred4, label)
 
-        edge_mask_up = F.interpolate(
-            edge_mask,
-            size=label.shape[-2:],  # 获取 label 的 H, W
-            mode="bilinear",
-            align_corners=False
-        )
-        boundary = self.boundary_loss(edge_mask_up, label)
+        # 1. 最终输出损失
+        loss_main = self.hybrid_loss(pred_s, label)
 
-        loss = loss1 + boundary
+        # 2. GLF 各级原型粗预测深监督 (逐层回传梯度)
+        loss_aux = 0.0
+        aux_weights = [0.4, 0.3, 0.2, 0.1]
+        for s_mask, w in zip(coarse_masks, aux_weights):
+            if s_mask.shape[-2:] != label.shape[-2:]:
+                s_mask = F.interpolate(s_mask, size=label.shape[-2:], mode="bilinear", align_corners=False)
+            loss_aux += w * self.hybrid_loss(s_mask, label)
 
-        return pred1, loss
+        total_loss = loss_main + loss_aux
+        return pred_s, total_loss
 
     @torch.inference_mode()
     def inference(self, x):

@@ -6,11 +6,6 @@ import os
 
 
 class BoundaryLoss(nn.Module):
-    """
-    基于空间梯度的边界损失 (Gradient-based Boundary Loss)
-    完美复刻 MATLAB 的 gradient(gt) 逻辑，专治 1 像素极细划痕！
-    """
-
     def __init__(self):
         super(BoundaryLoss, self).__init__()
         # self.has_saved_debug = True

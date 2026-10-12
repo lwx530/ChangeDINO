@@ -132,8 +132,70 @@ class DINOV3Wrapper(nn.Module):
 
 
 
-class LinearAdapter(nn.Module):
+# class LinearAdapter(nn.Module):
+#
+#     def __init__(
+#             self,
+#             in_dim=1024,
+#             out_dim=128,
+#             sizes=(128, 64, 32, 16),
+#     ):
+#         super().__init__()
+#         self.sizes = list(sizes)
+#
+#         # 官方 Linear Head 做法：BN + 1x1 Conv 降维
+#         self.projs = nn.ModuleList([
+#             nn.Sequential(
+#                 nn.Conv2d(in_dim, out_dim, kernel_size=1, bias=False),
+#                 nn.BatchNorm2d(out_dim),
+#                 nn.ReLU(inplace=True),
+#             ) for _ in self.sizes
+#         ])
+#         self.conv2 = nn.Sequential(
+#             nn.Conv2d(out_dim, out_dim, kernel_size=3, padding=1, bias=False),
+#             nn.BatchNorm2d(out_dim),
+#             nn.ReLU(inplace=True),
+#         )
+#
+#     def forward(self, feats):
+#
+#         outs = []
+#         for i, x in enumerate(feats):
+#
+#             x_proj = self.projs[i](x)
+#
+#             x_aligned = F.interpolate(
+#                 x_proj,
+#                 size=(self.sizes[i], self.sizes[i]),
+#                 mode="bilinear",
+#                 align_corners=False,
+#                 antialias=True  # DINO特征下采样建议开启抗锯齿
+#             )
+#             x2 = self.conv2(x_aligned)
+#             outs.append(x2)
+#
+#         return outs
 
+
+class DepthwiseResidualBlock(nn.Module):
+    """每个尺度专属的轻量局部特征建模块"""
+
+    def __init__(self, channels):
+        super().__init__()
+        self.dwconv = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1, groups=channels, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(channels, channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(channels)
+        )
+        self.act = nn.SiLU(inplace=True)
+
+    def forward(self, x):
+        return self.act(x + self.dwconv(x))
+
+
+class LinearAdapter(nn.Module):
     def __init__(
             self,
             in_dim=1024,
@@ -143,38 +205,47 @@ class LinearAdapter(nn.Module):
         super().__init__()
         self.sizes = list(sizes)
 
-        # 官方 Linear Head 做法：BN + 1x1 Conv 降维
+        # 1. 采用瓶颈过渡（1024 -> mid_dim -> out_dim），缓解信息坍塌
+        mid_dim = 256
         self.projs = nn.ModuleList([
             nn.Sequential(
-                nn.Conv2d(in_dim, out_dim, kernel_size=1, bias=False),
+                nn.Conv2d(in_dim, mid_dim, kernel_size=1, bias=False),
+                nn.BatchNorm2d(mid_dim),
+                nn.SiLU(inplace=True),
+                nn.Conv2d(mid_dim, out_dim, kernel_size=1, bias=False),
                 nn.BatchNorm2d(out_dim),
-                nn.ReLU(inplace=True),
+                nn.SiLU(inplace=True)
             ) for _ in self.sizes
         ])
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(out_dim, out_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_dim),
-            nn.ReLU(inplace=True),
-        )
+
+        # 2. 为每个尺度分配独立的平滑与局部上下文建模块，不再共享权重
+        self.refiners = nn.ModuleList([
+            DepthwiseResidualBlock(out_dim) for _ in self.sizes
+        ])
 
     def forward(self, feats):
-
         outs = []
         for i, x in enumerate(feats):
-
             x_proj = self.projs[i](x)
 
-            x_aligned = F.interpolate(
-                x_proj,
-                size=(self.sizes[i], self.sizes[i]),
-                mode="bilinear",
-                align_corners=False,
-                antialias=True  # DINO特征下采样建议开启抗锯齿
-            )
-            x2 = self.conv2(x_aligned)
-            outs.append(x2)
+            # 尺寸对齐
+            if x_proj.shape[-2:] != (self.sizes[i], self.sizes[i]):
+                x_aligned = F.interpolate(
+                    x_proj,
+                    size=(self.sizes[i], self.sizes[i]),
+                    mode="bilinear",
+                    align_corners=False,
+                    antialias=True
+                )
+            else:
+                x_aligned = x_proj
+
+            # 独立尺度的残差精炼
+            x_out = self.refiners[i](x_aligned)
+            outs.append(x_out)
 
         return outs
+
 
 class ConvOut(nn.Module):
     def __init__(self, in_channel):
