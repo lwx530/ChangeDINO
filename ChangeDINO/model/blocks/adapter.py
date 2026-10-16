@@ -2,9 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import re
-from dinov3.utils.utils import cat_keep_shapes, uncat_with_shapes
-from einops import rearrange
-from mmcv.ops import MultiScaleDeformableAttention
 import math
 
 
@@ -21,12 +18,8 @@ MODEL_TO_NUM_LAYERS = {
 
 import torch
 import torch.nn as nn
-from einops import rearrange
-from mmcv.ops import MultiScaleDeformableAttention
-
 
 class LoRALinear(nn.Module):
-    """论文式 LoRA：冻结原 Linear，旁路加 (alpha/r) * B(A(x))，B 初始化为 0"""
     def __init__(self, base: nn.Linear, r: int = 8, alpha: float = 16.0, dropout: float = 0.0):
         super().__init__()
         self.base = base
@@ -65,7 +58,6 @@ class LoRALinear(nn.Module):
 
 
 def apply_lora_to_dinov3(model, target_layers=None, rank=8, alpha=16.0, dropout=0.0):
-    """给 DINOv3 每个 block 的 attn.qkv/proj 和 mlp.fc1/fc2 挂 LoRA"""
     if target_layers is None:
         target_layers = list(range(len(model.blocks)))
     for i in target_layers:
@@ -178,7 +170,6 @@ class DINOV3Wrapper(nn.Module):
 
 
 class DepthwiseResidualBlock(nn.Module):
-    """每个尺度专属的轻量局部特征建模块"""
 
     def __init__(self, channels):
         super().__init__()

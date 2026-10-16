@@ -4,7 +4,8 @@ import torch.nn.functional as F
 import timm
 from .blocks.adapter import DINOV3Wrapper, LinearAdapter
 from .backbone.mobilenetv2 import mobilenet_v2
-from .blocks.cfsb import CFSB
+from .blocks.hffe import HFFE_CPOE
+from .blocks.smcb import SMCB
 
 
 def get_backbone(backbone_name):
@@ -37,154 +38,6 @@ class DepthwiseSeparableConv(nn.Module):
         return self.conv(x)
 
 
-class POE(nn.Module):
-
-    def __init__(self, in_dim):
-        super().__init__()
-        self.gap = nn.AdaptiveAvgPool2d(1)
-        self.conv1x1 = nn.Sequential(
-            nn.Conv2d(in_dim * 2, in_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(in_dim),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, f_target, f_source, s_gl):
-        # 掩码空间对齐并截断置信度
-        if s_gl.shape[-2:] != f_source.shape[-2:]:
-            s_gl = F.interpolate(s_gl, size=f_source.shape[-2:], mode="bilinear", align_corners=False)
-        mask = torch.sigmoid(s_gl)
-
-        # Prototype = E(GAP(S_GL * F_source))
-        proto = self.gap(mask * f_source)
-        proto_exp = proto.expand_as(f_target)
-
-        # Conv1x1(Cat[F_target, proto])
-        return self.conv1x1(torch.cat([f_target, proto_exp], dim=1))
-
-
-class CPOE(nn.Module):
-
-    def __init__(self, cnn_dim, dino_dim, out_dim):
-        super().__init__()
-        # 深度可分离卷积调整两路通道至 out_dim
-        self.dw_r = DepthwiseSeparableConv(cnn_dim, out_dim)
-        self.dw_m = DepthwiseSeparableConv(dino_dim, out_dim)
-
-        # 粗分割预测头 S_GL，同时用于提供逐层深监督
-        self.coarse_conv = nn.Sequential(
-            nn.Conv2d(out_dim * 2, out_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_dim),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_dim, 1, kernel_size=1)
-        )
-
-        self.poe_m2r = POE(out_dim)  # Global -> Local
-        self.poe_r2m = POE(out_dim)  # Local -> Global
-
-        self.fuse_conv = nn.Sequential(
-            nn.Conv2d(out_dim * 2, out_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_dim),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, f_r, f_m):
-        # 1. 深度可分离卷积调整通道
-        f_dr = self.dw_r(f_r)
-        f_dm = self.dw_m(f_m)
-
-        # 尺寸对齐 (以 CNN 分支空间尺寸为基准)
-        if f_dm.shape[-2:] != f_dr.shape[-2:]:
-            f_dm = F.interpolate(f_dm, size=f_dr.shape[-2:], mode="bilinear", align_corners=False)
-
-        # 2. 生成粗分割掩码 S_GL
-        s_gl = self.coarse_conv(torch.cat([f_dr, f_dm], dim=1))
-
-        # 3. 跨原型注入增强 (公式 1 与 2)
-        f_rm = self.poe_m2r(f_dr, f_dm, s_gl)
-        f_mr = self.poe_r2m(f_dm, f_dr, s_gl)
-
-        f_rm_prime = f_dr + f_dr * f_rm
-        f_dm_prime = f_dm + f_dm * f_mr
-
-        # 4. 拼接并通过 1x1 卷积输出 F_CP
-        f_cp = self.fuse_conv(torch.cat([f_dm_prime, f_rm_prime], dim=1))
-        return f_cp, s_gl
-
-
-class S_Gate(nn.Module):
-
-    def __init__(self, in_dim, num_gates=4):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(in_dim, in_dim // 4, kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_dim // 4, num_gates, kernel_size=1),
-            nn.Softmax(dim=1)
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-
-class SSA(nn.Module):
-
-    def __init__(self, in_dim):
-        super().__init__()
-        self.gate = S_Gate(in_dim, 4)
-        self.dw_conv = nn.Conv2d(in_dim, 1, kernel_size=3, padding=1, groups=1, bias=False)
-        self.cn2 = nn.Conv2d(in_dim, 1, kernel_size=1, bias=False)
-        self.cn3 = nn.Conv2d(in_dim, 1, kernel_size=3, padding=1, bias=False)
-        self.cn4 = nn.Conv2d(in_dim, 1, kernel_size=5, padding=2, bias=False)
-
-    def forward(self, x):
-        gates = self.gate(x)  # [B, 4, 1, 1]
-
-        m1 = self.dw_conv(x) * gates[:, 0:1]
-        m2 = self.cn2(x) * gates[:, 1:2]
-        m3 = self.cn3(x) * gates[:, 2:3]
-        m4 = self.cn4(x) * gates[:, 3:4]
-
-        return torch.sigmoid(m1 + m2 + m3 + m4)
-
-
-class SCA(nn.Module):
-
-    def __init__(self, in_dim):
-        super().__init__()
-        self.gate = S_Gate(in_dim, 4)
-        self.gap = nn.AdaptiveAvgPool2d(1)
-
-        # 4 个不同压缩比的 MLP (4, 8, 16, 32)
-        ratios = [4, 8, 16, 32]
-        self.mlps = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(in_dim, max(in_dim // r, 4), kernel_size=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(max(in_dim // r, 4), in_dim, kernel_size=1)
-            ) for r in ratios
-        ])
-
-    def forward(self, x):
-        gates = self.gate(x)  # [B, 4, 1, 1]
-        gap_x = self.gap(x)
-
-        c_att = sum(self.mlps[i](gap_x) * gates[:, i:i + 1] for i in range(4))
-        return torch.sigmoid(c_att)
-
-
-class SSCA(nn.Module):
-
-    def __init__(self, in_dim):
-        super().__init__()
-        self.ssa = SSA(in_dim)
-        self.sca = SCA(in_dim)
-
-    def forward(self, f_m):
-        a_s = self.ssa(f_m)
-        a_c = self.sca(f_m)
-        return f_m + f_m * a_c * a_s
-
 
 class UpsampleBlock(nn.Module):
 
@@ -210,10 +63,9 @@ class GLFModule(nn.Module):
 
     def __init__(self, cnn_dim=64, dino_dim=128, out_dim=64):
         super().__init__()
-        self.cpoe = CPOE(cnn_dim, dino_dim, out_dim)
+        self.cpoe = HFFE_CPOE(cnn_dim, dino_dim, out_dim)
 
-        self.cfsb = CFSB(in_channels=dino_dim)
-        # self.ssca = SSCA(dino_dim)
+        self.smcb = SMCB(in_channels=dino_dim, kernel_size=3, num_groups=4)
 
         self.proj_sc = nn.Sequential(
             nn.Conv2d(dino_dim, out_dim, kernel_size=1, bias=False),
@@ -225,12 +77,10 @@ class GLFModule(nn.Module):
         self.upsample = UpsampleBlock(in_dim=out_dim * 3, out_dim=out_dim)
 
     def forward(self, f_r, f_m, f_gl_deeper=None):
-        # 1. CPOE 交互提取 F_CP 与深监督粗掩码 s_gl
         f_cp, s_gl = self.cpoe(f_r, f_m)
         target_size = f_cp.shape[-2:]
 
-        # f_sc = self.proj_sc(self.ssca(f_m))
-        f_sc = self.proj_sc(self.cfsb(f_m))
+        f_sc = self.proj_sc(self.smcb(f_m))
         if f_sc.shape[-2:] != target_size:
             f_sc = F.interpolate(f_sc, size=target_size, mode="bilinear", align_corners=False)
 
