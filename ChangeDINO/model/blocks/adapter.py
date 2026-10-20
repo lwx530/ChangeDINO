@@ -190,14 +190,14 @@ class LinearAdapter(nn.Module):
     def __init__(
             self,
             in_dim=1024,
-            out_dim=128,
+            out_dim=64,
+            mid_dim=256,
             sizes=(128, 64, 32, 16),
     ):
         super().__init__()
         self.sizes = list(sizes)
 
         # 1. 采用瓶颈过渡（1024 -> mid_dim -> out_dim），缓解信息坍塌
-        mid_dim = 256
         self.projs = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(in_dim, mid_dim, kernel_size=1, bias=False),

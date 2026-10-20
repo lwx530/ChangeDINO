@@ -8,8 +8,8 @@ class Options:
 
     def init(self):
 
-        self.parser.add_argument("--gpu_ids", type=str, default="2", help="gpu ids: e.g. 0. use -1 for CPU")
-        self.parser.add_argument("--name", type=str, default="ESDI-33")
+        self.parser.add_argument("--gpu_ids", type=str, default="0", help="gpu ids: e.g. 0. use -1 for CPU")
+        self.parser.add_argument("--name", type=str, default="ESDI-36")
         self.parser.add_argument("--dataroot", type=str, default="/home/linweixuan/ChangeDINO/datasets")
         # self.parser.add_argument("--dataset", type=str, default="SD-Saliency-900")
         self.parser.add_argument("--dataset", type=str, default="ESDIs-SOD")
@@ -24,11 +24,11 @@ class Options:
 
         self.parser.add_argument("--seed", type=int, default=1)
         self.parser.add_argument("--batch_size", type=int, default=8)
-        self.parser.add_argument("--num_epochs", type=int, default=100)
+        self.parser.add_argument("--num_epochs", type=int, default=150)
         self.parser.add_argument("--num_workers", type=int, default=4, help="#threads for loading data")
         self.parser.add_argument("--lr", type=float, default=1e-4)
         self.parser.add_argument("--weight_decay", type=float, default=0.01)
-        self.parser.add_argument("--epoch_val", type=int, default=50, help="从第几轮开始评测")
+        self.parser.add_argument("--epoch_val", type=int, default=60, help="从第几轮开始评测")
 
     def parse(self):
         self.init()

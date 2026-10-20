@@ -1,4 +1,4 @@
-from .ChangeDINO import ChangeModel
+from .ChangeDINO import SurfDINO
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -9,7 +9,7 @@ from .loss.boundary import BoundaryLoss
 from .loss.hybrid_loss import HybridLoss
 
 def get_model(**kwargs):
-    model = ChangeModel(**kwargs)
+    model = SurfDINO(**kwargs)
     # print(model)
     return model
 
