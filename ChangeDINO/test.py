@@ -2,13 +2,14 @@ import os
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from tqdm import tqdm
 
 from option import Options
 from data.cd_dataset import DataLoader
 from model.create_ChangeDINO import create_model
-from util.WPFormer_metrics import MAE, Emeasure, Fmeasure, Smeasure, WeightedFmeasure
+from util.SOD_metrics import MAE, Emeasure, Fmeasure, Smeasure, WeightedFmeasure
 
 
 def evaluate(model, data_loader, save_dir=None):
@@ -26,29 +27,28 @@ def evaluate(model, data_loader, save_dir=None):
         for _data in tqdm(data_loader, ncols=80):
             logits = model.inference(_data["image"].cuda())
 
-            if logits.shape[1] == 2:
-                prob = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
-            else:
-                prob = torch.sigmoid(logits[:, 0]).cpu().numpy()
-
-            for j in range(prob.shape[0]):
-                p = prob[j]
-                p = (p - p.min()) / (p.max() - p.min() + 1e-8)
-
-                img = Image.fromarray((p * 255).astype(np.float32)).convert("L")
-
+            for j in range(logits.shape[0]):
                 gt = cv2.imread(_data["label_path"][j], cv2.IMREAD_GRAYSCALE)
                 if gt is None:
                     raise FileNotFoundError(_data["label_path"][j])
                 H, W = gt.shape
-                img = img.resize((W, H), resample=Image.NEAREST)
-                # img = img.resize((W, H), resample=Image.BILINEAR)
+
+                logit_single = logits[j : j + 1]
+                logit_up = F.interpolate(
+                    logit_single, size=(H, W), mode="bilinear", align_corners=False
+                )
+
+                if logit_up.shape[1] == 2:
+                    p = torch.softmax(logit_up, dim=1)[0, 1].cpu().numpy()
+                else:
+                    p = torch.sigmoid(logit_up[0, 0]).cpu().numpy()
+
+                pred = np.clip(np.round(p * 255.0), 0, 255).astype(np.uint8)
 
                 if save_dir is not None:
                     name = os.path.splitext(_data["fname"][j])[0] + ".png"
-                    img.save(os.path.join(save_dir, name))
+                    Image.fromarray(pred).save(os.path.join(save_dir, name))
 
-                pred = np.array(img)
                 FM.step(pred=pred, gt=gt)
                 WFM.step(pred=pred, gt=gt)
                 SM.step(pred=pred, gt=gt)
@@ -66,7 +66,7 @@ def evaluate(model, data_loader, save_dir=None):
         "maxEm":     '%.4f' % EM.get_results()["em"]["curve"].max(),
         "maxFm":     '%.4f' % FM.get_results()["fm"]["curve"].max(),
     }
-    print(results)
+    print("Test Results:", results)
 
     return results
 
@@ -74,6 +74,8 @@ def evaluate(model, data_loader, save_dir=None):
 if __name__ == "__main__":
     opt = Options().parse()
     opt.phase = "test"
+
+    opt.ckpt_name = "SD-7_resnet34_epoch66_sm0.8969.pth"  # 换成你实际的权重文件名
 
     test_loader = DataLoader(opt)
     test_data = test_loader.load_data()

@@ -17,16 +17,11 @@ class BasicConv2d(nn.Module):
 
 
 class SWMGenerator(nn.Module):
-    """
-    三合一空间权重生成器 (合并原 SAM 与 SWM，去除有害的 BatchNorm2d(1))
-    同时融合 [通道均值(1ch), 通道极值(1ch), 可学习通道投影(1ch)]，保留细微裂纹的极值响应
-    """
-
+    """三合一空间权重生成器 (对应 CSR 中的空间显著性感知 \phi_SA)"""
     def __init__(self, dim):
         super().__init__()
         self.pw = nn.Conv2d(dim, 1, kernel_size=1, bias=False)
         self.mix = nn.Conv2d(3, 1, kernel_size=7, padding=3, bias=True)
-        # 负偏置初始化 (-2.0)，使初始掩码均值约为 sigmoid(-2.0) ≈ 0.12 (默认抑制背景)
         nn.init.constant_(self.mix.bias, -2.0)
 
     def forward(self, x):
@@ -37,8 +32,7 @@ class SWMGenerator(nn.Module):
 
 
 class CoordinateAttention(nn.Module):
-    """返回纯正交坐标注意力权重 a_w * a_h，范围 (0, 1)"""
-
+    """正交坐标通道注意力 (对应 CSR 中的通道方向感知 \phi_CA)"""
     def __init__(self, channels, reduction=16):
         super().__init__()
         self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
@@ -68,87 +62,76 @@ class CoordinateAttention(nn.Module):
 
 class BCFM(nn.Module):
     """
-    Bidirectional Coordinate-Feature Modulation Module (BCFM)
-    保留交叉相乘求同主干 + 共享基空间下的非零初始化残差存异补偿
+    Cross-frequency Bidirectional Coordinate-Feature Modulation (BCFM / CSR)
+    融合 DTP 论文 CSR 公式 (3)-(4) 与双向求同存异机制:
+    1. 空间分支 \phi_SA: 利用 SWM 进行高低频双向空间交叉调制
+    2. 通道坐标分支 \phi_CA: 利用 CoordinateAttention 进行正交方向调制
+    3. 动态门控 G_att: 自适应平衡 \phi_CA 与 \phi_SA，并叠加高频残差细节
     """
-
     def __init__(self, dim=64, use_discrepancy=True):
         super().__init__()
         self.dim = dim
         self.use_discrepancy = use_discrepancy
 
-        # 1. 局部特征提纯
-        self.cbr_r = BasicConv2d(dim, dim, kernel_size=3, padding=1)
-        self.cbr_d = BasicConv2d(dim, dim, kernel_size=3, padding=1)
+        # 1. \phi_SA: 空间注意力分支
+        self.swm_low = SWMGenerator(dim)
+        self.swm_high = SWMGenerator(dim)
+        self.sa_fuse = BasicConv2d(dim * 2, dim, kernel_size=1)
 
-        # 2. 三合一无 BN 空间权重矩阵生成器
-        self.swm_r_gen = SWMGenerator(dim)
-        self.swm_d_gen = SWMGenerator(dim)
-
-        # 3. 正交坐标注意力与主干求同融合
+        # 2. \phi_CA: 正交坐标通道注意力分支
         self.coord_att = CoordinateAttention(dim * 2, reduction=16)
-        self.cbr1_r = BasicConv2d(dim, dim, kernel_size=1)
-        self.cbr1_d = BasicConv2d(dim, dim, kernel_size=1)
-        self.fuse_conv = BasicConv2d(dim * 2, dim, kernel_size=1)
+        self.ca_fuse = BasicConv2d(dim * 2, dim, kernel_size=1)
 
-        # 4. 残差式分歧补偿分支
+        # 3. 论文 CSR 公式 (3): 可学习软门控函数 G_att \in [0, 1]
+        self.gating = nn.Sequential(
+            nn.Conv2d(dim * 2, dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.Sigmoid()
+        )
+
+        # 4. 频域分歧补偿与高频残差保持 (对应公式 4 的高频结构保留)
         if self.use_discrepancy:
-            self.proj_shared = nn.Sequential(
-                nn.Conv2d(dim, dim, kernel_size=1, bias=False),
-                nn.BatchNorm2d(dim)  # 不加 ReLU，保留正负符号信息
-            )
             self.dis_head = nn.Sequential(
-                nn.Conv2d(dim * 2, dim, kernel_size=1, bias=False),
-                nn.BatchNorm2d(dim),
-                nn.ReLU(inplace=True),
                 nn.Conv2d(dim, dim, kernel_size=3, padding=1, groups=dim, bias=False),
                 nn.BatchNorm2d(dim),
-                nn.ReLU(inplace=True),
+                nn.SiLU(inplace=True),
                 nn.Conv2d(dim, dim, kernel_size=1, bias=False),
-                nn.BatchNorm2d(dim)  # 稳定输出尺度至 O(1)
+                nn.BatchNorm2d(dim)
             )
-            # 【关键修复】严禁使用 torch.zeros(1)，必须初始化为非零极小值（如 1e-2），
-            # 否则会导致 dis_head 内部权重梯度恒等于 0 产生死锁！
             self.gamma = nn.Parameter(torch.tensor(1e-2))
 
-        # 5. 阶段粗预测深监督头 (位置 A：输出 Logits)
+        # 5. 深监督粗预测头
         self.coarse_head = nn.Sequential(
             BasicConv2d(dim, dim, kernel_size=3, padding=1),
             nn.Conv2d(dim, 1, kernel_size=1)
         )
 
-    def forward(self, f_r, f_d_align):
-        # 1. 特征提纯与空间掩码生成
-        f_r_p = self.cbr_r(f_r)
-        f_d_p = self.cbr_d(f_d_align)
+    def forward(self, f_low, f_high):
+        """
+        f_low:  FSD 解耦出的低频全局语义特征 [B, C, H, W]
+        f_high: FSD 解耦出的高频边缘纹理特征 [B, C, H, W]
+        """
+        cat_feat = torch.cat([f_low, f_high], dim=1)
 
-        swm_r = self.swm_r_gen(f_r_p)
-        swm_d = self.swm_d_gen(f_d_p)
+        # 1. 计算空间交叉调制特征 \phi_SA(f_low, f_high)
+        m_low = self.swm_low(f_low)
+        m_high = self.swm_high(f_high)
+        phi_sa = self.sa_fuse(torch.cat([f_low * m_high, f_high * m_low], dim=1))
 
-        # 2. 双向交叉相乘校验 (求同主干)
-        f_r_dp = f_r * swm_d
-        f_d_dp = f_d_align * swm_r
+        # 2. 计算坐标通道调制特征 \phi_CA(f_low, f_high)
+        ca_weights = self.coord_att(cat_feat)
+        phi_ca = self.ca_fuse(cat_feat * ca_weights)
 
-        ca_weight = self.coord_att(torch.cat([f_r_p, f_d_p], dim=1))
-        w_r, w_d = torch.split(ca_weight, self.dim, dim=1)
+        # 3. 论文公式 (3): G_att 软门控自适应融合
+        g_att = self.gating(cat_feat)
+        f_csr = g_att * phi_ca + (1.0 - g_att) * phi_sa
 
-        out_r = w_r * self.cbr1_r(f_r_p + f_r_dp)
-        out_d = w_d * self.cbr1_d(f_d_p + f_d_dp)
-        base = self.fuse_conv(torch.cat([out_r, out_d], dim=1))
-
-        # 3. 共享基空间下的分歧残差补偿 (存异支路)
+        # 4. 论文公式 (4) + 存异补偿: 强化高频边界残差保留
         if self.use_discrepancy:
-            m_dis = (swm_r - swm_d).abs()
-            diff = self.proj_shared(f_r) - self.proj_shared(f_d_align)
-            f_dis = self.dis_head(torch.cat([diff, diff.abs()], dim=1)) * m_dis
-            f_bcfm = base + self.gamma * f_dis
-
-            # 【建议】在训练时可以通过打印或记录这两个值来监控分歧分支是否在正常工作：
-            # print(f"gamma: {self.gamma.item():.4f}, m_dis_mean: {m_dis.mean().item():.4f}")
+            m_dis = (m_low - m_high).abs()
+            f_bcfm = f_csr + self.gamma * (self.dis_head(f_high) * m_dis)
         else:
-            f_bcfm = base
+            f_bcfm = f_csr
 
-        # 4. 生成当前尺度深监督粗预测 (Logits)
         p_aux = self.coarse_head(f_bcfm)
-
         return f_bcfm, p_aux

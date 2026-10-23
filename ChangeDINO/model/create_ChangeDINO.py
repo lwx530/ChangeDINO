@@ -66,18 +66,42 @@ class Model(nn.Module):
     def inference(self, x):
         return self.model._forward(x)
 
+    # def load_ckpt(self, network, optimizer, name, backbone):
+    #     save_filename = "%s_%s_best.pth" % (name, backbone)
+    #     save_path = os.path.join(self.save_dir, save_filename)
+    #     if not os.path.isfile(save_path):
+    #         print("%s not exists yet!" % save_path)
+    #         raise ("%s must exist!" % save_filename)
+    #     else:
+    #         checkpoint = torch.load(
+    #             save_path, map_location=self.device, weights_only=True
+    #         )
+    #         network.load_state_dict(checkpoint["network"], strict=False)
+    #         print("load pre-trained")
+
+
     def load_ckpt(self, network, optimizer, name, backbone):
-        save_filename = "%s_%s_best.pth" % (name, backbone)
-        save_path = os.path.join(self.save_dir, save_filename)
+        # 优先判断用户是否在 opt 中指定了特定的权重文件名
+        if hasattr(self.opt, "ckpt_name") and self.opt.ckpt_name:
+            save_filename = self.opt.ckpt_name
+            save_path = os.path.join(self.save_dir, save_filename)
+        else:
+            # 默认的查找逻辑
+            save_filename = "%s_%s_best.pth" % (name, backbone)
+            save_path = os.path.join(self.save_dir, save_filename)
+
         if not os.path.isfile(save_path):
             print("%s not exists yet!" % save_path)
-            raise ("%s must exist!" % save_filename)
+            raise FileNotFoundError("%s must exist!" % save_filename)
         else:
             checkpoint = torch.load(
                 save_path, map_location=self.device, weights_only=True
             )
-            network.load_state_dict(checkpoint["network"], strict=False)
-            print("load pre-trained")
+            if "network" in checkpoint:
+                network.load_state_dict(checkpoint["network"], strict=False)
+            else:
+                network.load_state_dict(checkpoint, strict=False)
+            print("Successfully loaded pre-trained weights from:", save_path)
 
     def save_ckpt(self, network, optimizer, model_name, backbone):
         save_filename = "%s_%s_best.pth" % (model_name, backbone)
